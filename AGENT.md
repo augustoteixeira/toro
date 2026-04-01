@@ -27,6 +27,7 @@ This is a DIY weather station project with two components:
 - The user drives all decisions; agents propose and wait for confirmation.
 - When a task requires interactive commands (e.g. `cargo generate`), instruct the user to run them and wait for the result before proceeding.
 - Diagnose problems by actually running commands and reading output — do not guess.
+- **Never run `cargo espflash flash` or any other command that does not exit on its own.** The agent cannot send Ctrl-C or otherwise interrupt a running process. Flashing and serial monitoring must always be done by the user, who will paste back any relevant output.
 - Known environment issues to be aware of:
   - `cargo` is not on the default `PATH`; prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"` or rely on the shell having it set.
   - `cargo-espflash` 4.x fails to compile; use version 3.3.0.
