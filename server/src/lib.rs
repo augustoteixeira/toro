@@ -1,4 +1,7 @@
 use rand::RngCore;
+use rocket::http::Status;
+use rocket::request::{FromRequest, Outcome};
+use rocket::Request;
 use rocket_db_pools::{Database, sqlx};
 
 #[derive(Database)]
@@ -61,4 +64,38 @@ pub async fn ensure_token(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
     println!("===========================================");
 
     Ok(())
+}
+
+pub struct TokenAuthenticated;
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for TokenAuthenticated {
+    type Error = ();
+
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, ()> {
+        let pool = match req.rocket().state::<Db>() {
+            Some(db) => &db.0,
+            None => return Outcome::Error((Status::InternalServerError, ())),
+        };
+
+        let token = match req.headers().get_one("Authorization") {
+            Some(header) if header.starts_with("Bearer ") => &header[7..],
+            _ => return Outcome::Error((Status::Unauthorized, ())),
+        };
+
+        let hash: String = match sqlx::query_scalar(
+            "SELECT value FROM meta WHERE key = 'token_hash'",
+        )
+        .fetch_optional(pool)
+        .await
+        {
+            Ok(Some(h)) => h,
+            _ => return Outcome::Error((Status::InternalServerError, ())),
+        };
+
+        match bcrypt::verify(token, &hash) {
+            Ok(true) => Outcome::Success(TokenAuthenticated),
+            _ => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
 }

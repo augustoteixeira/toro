@@ -10,7 +10,7 @@
 
 ## 3. Authentication
 - [x] Store hashed API tokens in the database
-- [ ] Implement `TokenAuthenticated` request guard (validates `Authorization: Bearer <token>` header)
+- [x] Implement `TokenAuthenticated` request guard (validates `Authorization: Bearer <token>` header)
 - [x] First-run token generation (auto-generated on first start)
 
 ## 4. POST endpoint
