@@ -1,0 +1,5 @@
+reset:
+  rm -f db.sqlite
+
+fill:
+  sqlite3 db.sqlite ".read fake_dump.sql"
