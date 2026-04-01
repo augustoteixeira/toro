@@ -21,3 +21,15 @@ This is a DIY weather station project with two components:
 - Each change must be justified by an explicit instruction.
 - Prefer correctness and clarity over cleverness or completeness.
 - Do not anticipate future steps or scaffold ahead.
+
+## Working Dynamics
+
+- The user drives all decisions; agents propose and wait for confirmation.
+- When a task requires interactive commands (e.g. `cargo generate`), instruct the user to run them and wait for the result before proceeding.
+- Diagnose problems by actually running commands and reading output — do not guess.
+- Known environment issues to be aware of:
+  - `cargo` is not on the default `PATH`; prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"` or rely on the shell having it set.
+  - `cargo-espflash` 4.x fails to compile; use version 3.3.0.
+  - `libclang-dev` and `libudev-dev` must be installed via `apt` before building the esp crate.
+  - `ldproxy` must be installed via `cargo install ldproxy`.
+  - The user must be in the `dialout` group to flash over USB.
