@@ -1,0 +1,10 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4"
+maud = { version = "0.27", features = ["rocket"] }
+rocket = { version = "0.5", features = ["secrets"] }
+rocket_db_pools = { version = "0.2", features = ["sqlx_sqlite"] }
