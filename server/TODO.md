@@ -1,17 +1,17 @@
 # Server TODO
 
 ## 1. Project scaffolding
-- [ ] Create `server/` Rust crate with Rocket, `rocket_db_pools`/sqlx (SQLite), and maud
+- [x] Create `server/` Rust crate with Rocket, `rocket_db_pools`/sqlx (SQLite), and maud
 
 ## 2. Database setup
-- [ ] Add `Rocket.toml` with database path
-- [ ] Add migration scaffolding: `meta` table, `schema_version` check at startup
-- [ ] Define and run initial migration: `readings` table (`id`, `timestamp`, `token_id`, payload columns)
+- [x] Add `Rocket.toml` with database path
+- [x] Add migration scaffolding: `meta` table, `schema_version` check at startup
+- [x] Define and run initial migration: `hourly_readings` table
 
 ## 3. Authentication
-- [ ] Store hashed API tokens in the database
+- [x] Store hashed API tokens in the database
 - [ ] Implement `TokenAuthenticated` request guard (validates `Authorization: Bearer <token>` header)
-- [ ] First-run token generation (prompt or CLI command)
+- [x] First-run token generation (auto-generated on first start)
 
 ## 4. POST endpoint
 - [ ] `POST /readings` — ESP submits sensor data; guarded by `TokenAuthenticated`; inserts a row
