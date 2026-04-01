@@ -1,6 +1,7 @@
 use rand::RngCore;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
+use rocket::serde::Deserialize;
 use rocket::Request;
 use rocket_db_pools::{Database, sqlx};
 
@@ -62,6 +63,36 @@ pub async fn ensure_token(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
     println!("  API token (save this, shown only once):");
     println!("  {}", token);
     println!("===========================================");
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(crate = "rocket::serde")]
+pub struct Reading {
+    pub hour: String,
+    pub temperature: Option<f64>,
+    pub humidity: Option<f64>,
+    pub wind_speed: Option<f64>,
+    pub wind_direction: Option<f64>,
+    pub luminosity: Option<f64>,
+    pub rainfall: Option<f64>,
+}
+
+pub async fn insert_reading(pool: &sqlx::SqlitePool, r: &Reading) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO hourly_readings (hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&r.hour)
+    .bind(r.temperature)
+    .bind(r.humidity)
+    .bind(r.wind_speed)
+    .bind(r.wind_direction)
+    .bind(r.luminosity)
+    .bind(r.rainfall)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }

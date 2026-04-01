@@ -1,5 +1,7 @@
 use maud::html;
-use server::{Db, ensure_token, migrate};
+use rocket::http::Status;
+use rocket::serde::json::Json;
+use server::{Db, Reading, TokenAuthenticated, ensure_token, insert_reading, migrate};
 
 #[rocket::get("/")]
 fn index() -> maud::Markup {
@@ -10,6 +12,18 @@ fn index() -> maud::Markup {
                 h1 { "Hello, world!" }
             }
         }
+    }
+}
+
+#[rocket::post("/readings", data = "<reading>")]
+async fn post_reading(
+    _auth: TokenAuthenticated,
+    db: &rocket::State<Db>,
+    reading: Json<Reading>,
+) -> Status {
+    match insert_reading(&db.0, &reading.into_inner()).await {
+        Ok(_) => Status::Created,
+        Err(_) => Status::UnprocessableEntity,
     }
 }
 
@@ -36,7 +50,7 @@ async fn main() -> Result<(), rocket::Error> {
                 }
             }
         }))
-        .mount("/", rocket::routes![index])
+        .mount("/", rocket::routes![index, post_reading])
         .ignite()
         .await?;
 

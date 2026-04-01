@@ -14,7 +14,7 @@
 - [x] First-run token generation (auto-generated on first start)
 
 ## 4. POST endpoint
-- [ ] `POST /readings` — ESP submits sensor data; guarded by `TokenAuthenticated`; inserts a row
+- [x] `POST /readings` — ESP submits sensor data; guarded by `TokenAuthenticated`; inserts a row
 
 ## 5. GET endpoints (time-scale based)
 - [ ] `GET /year/<year>` — render yearly summary (e.g. `/year/2026`)
