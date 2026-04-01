@@ -19,7 +19,7 @@
 ## 5. GET endpoints (time-scale based)
 - [ ] `GET /year/<year>` — render yearly summary (e.g. `/year/2026`)
 - [ ] `GET /month/<year-month>` — render monthly readings (e.g. `/month/2026-03`)
-- [ ] `GET /day/<year-month-day>` — render daily readings (e.g. `/day/2026-06-28`)
+- [x] `GET /day/<year-month-day>` — render daily readings (e.g. `/day/2026-06-28`)
 - [ ] `GET /` — landing page (redirect to current day, or render latest readings)
 
 ## 6. Error handling

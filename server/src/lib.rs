@@ -67,7 +67,7 @@ pub async fn ensure_token(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, sqlx::FromRow)]
 #[serde(crate = "rocket::serde")]
 pub struct Reading {
     pub hour: String,
@@ -95,6 +95,20 @@ pub async fn insert_reading(pool: &sqlx::SqlitePool, r: &Reading) -> Result<(), 
     .await?;
 
     Ok(())
+}
+
+pub async fn get_readings_for_day(
+    pool: &sqlx::SqlitePool,
+    date: &str,
+) -> Result<Vec<Reading>, sqlx::Error> {
+    let pattern = format!("{}%", date);
+    sqlx::query_as::<_, Reading>(
+        "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
+         FROM hourly_readings WHERE hour LIKE ? ORDER BY hour",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
 }
 
 pub struct TokenAuthenticated;
