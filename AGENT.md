@@ -1,5 +1,7 @@
 # Agent Instructions
 
+For the server side, we take inspiration at orbitask at https://github.com/augustoteixeira/orbitask
+
 ## Core Principles
 
 - Make **atomic changes only**. One small, focused change at a time.
@@ -45,3 +47,25 @@ The server is built incrementally following the plan in `server/TODO.md`. For ea
   - `libclang-dev` and `libudev-dev` must be installed via `apt` before building the esp crate.
   - `ldproxy` must be installed via `cargo install ldproxy`.
   - The user must be in the `dialout` group to flash over USB.
+  - Port 8000 is often already in use on the dev machine. Manual `cargo run` will fail on socket bind, but Rocket fairings (migration, etc.) still execute before the bind attempt.
+
+## Server Architecture (current state)
+
+- `server/src/lib.rs` — public library crate. Contains:
+  - `Db` struct (rocket_db_pools SQLite pool, pool name `"db"`)
+  - `migrate()` — bootstraps `meta` table, reads `schema_version`, runs `migrations/*.sql`
+  - `ensure_token()` — on first run, generates a random API token, prints it once, stores bcrypt hash in `meta`
+  - `TokenAuthenticated` — Rocket request guard; validates `Authorization: Bearer <token>` against bcrypt hash in `meta`
+- `server/src/main.rs` — thin binary entrypoint. Uses `#[rocket::main]` (not `#[launch]`) so we can run logic between `ignite()` and `launch()`.
+- `server/Rocket.toml` — database config: `data/db.sqlite`
+- `server/migrations/001-init.sql` — creates `hourly_readings` table, sets `schema_version = '1'`
+- `server/data/` — runtime data dir. `db.sqlite` is gitignored. Contains `fake_dump.sql` and a `justfile` with `reset` / `fill` recipes.
+- `server/tests/` — integration tests using in-memory SQLite pools (`tests/common.rs` helper). Test files: `test_migrate.rs`, `test_token.rs`, `test_auth.rs`. Run with `cargo test`.
+
+## Key Design Decisions
+
+- **ISO-8601 text keys** for time: `hourly_readings.hour` is TEXT (e.g. `"2026-03-15T14"`), primary key. No separate year/month/day entity tables.
+- **Summary tables** (daily/monthly) will be added later as separate flat tables keyed by ISO-8601 strings — not as foreign-key relationships.
+- **API token** (not password): auto-generated on first server start, stored as bcrypt hash in `meta` table under key `token_hash`. The plaintext is shown once and never stored.
+- **`meta` table** is a general-purpose key-value store for app config (`schema_version`, `token_hash`, future settings).
+- **`hourly_readings` columns**: `hour` (TEXT PK), `temperature`, `humidity`, `wind_speed`, `wind_direction`, `luminosity`, `rainfall` (all REAL). No `id` or `token_id` column — `token_id` lives in `meta`.
