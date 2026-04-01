@@ -22,6 +22,17 @@ This is a DIY weather station project with two components:
 - Prefer correctness and clarity over cleverness or completeness.
 - Do not anticipate future steps or scaffold ahead.
 
+## Server Development Workflow
+
+The server is built incrementally following the plan in `server/TODO.md`. For each item:
+
+1. **Pick** — the user selects the next TODO item to tackle.
+2. **Discuss** — the agent proposes an approach; the user reviews and adjusts.
+3. **Agree** — both sides confirm the strategy before any code is written.
+4. **Implement** — the agent writes the code.
+5. **Review** — verify the change builds, passes tests, or runs correctly.
+6. **Commit** — create a focused commit for the completed item.
+
 ## Working Dynamics
 
 - The user drives all decisions; agents propose and wait for confirmation.
