@@ -30,4 +30,4 @@
 - [x] Rate limiting on `POST /readings` (per-token or per-IP)
 
 ## 8. Deployment
-- [ ] Deployment config (supervisord or Docker)
+- [x] Deployment config (supervisord or Docker)

@@ -1,0 +1,45 @@
+set -e
+set -o pipefail
+
+VPS_USER=youruser
+VPS_HOST=your.vps.ip.or.domain
+REMOTE_DIR=/opt/toro
+REMOTE_BIN="$REMOTE_DIR/server/target/release/server"
+LOCAL_BIN=server/target/release/server
+
+echo "Compiling release"
+(cd ../../server; cargo build --release)
+
+echo "Starting deployment to $VPS_HOST"
+
+echo "Pulling latest files on server"
+ssh "$VPS_USER@$VPS_HOST" "cd '$REMOTE_DIR'; git pull" || {
+    echo "Failed to pull repo"
+    exit 1
+}
+
+echo "Stopping toro service"
+ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl stop toro" || {
+    echo "Failed to stop toro with supervisor"
+    exit 1
+}
+
+echo "Uploading new binary"
+scp "$LOCAL_BIN" "$VPS_USER@$VPS_HOST:$REMOTE_BIN" || {
+    echo "Failed to upload binary"
+    exit 1
+}
+
+echo "Setting executable permission"
+ssh "$VPS_USER@$VPS_HOST" "chmod +x '$REMOTE_BIN'"
+
+echo "Restarting toro service"
+ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl start toro" || {
+    echo "Failed to start toro with supervisor"
+    exit 1
+}
+
+echo "Checking service status"
+ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl status toro"
+
+echo "Deployment complete"
