@@ -1,0 +1,23 @@
+#!/bin/bash
+set -e
+set -o pipefail
+
+if [ -z "$1" ]; then
+    echo "Usage: ./release <version>"
+    echo "Example: ./release v1.2.0"
+    exit 1
+fi
+
+VERSION="$1"
+LOCAL_BIN="../../server/target/release/server"
+
+echo "Compiling release"
+(cd ../../server; cargo build --release)
+
+echo "Creating GitHub release $VERSION"
+gh release create "$VERSION" "$LOCAL_BIN" \
+    --title "$VERSION" \
+    --notes "Release $VERSION"
+
+echo "Release $VERSION created"
+echo "Download URL: $(gh release view "$VERSION" --json assets --jq '.assets[0].url')"

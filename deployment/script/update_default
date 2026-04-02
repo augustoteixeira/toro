@@ -1,14 +1,12 @@
+#!/bin/bash
 set -e
 set -o pipefail
 
 VPS_USER=youruser
 VPS_HOST=your.vps.ip.or.domain
+GITHUB_REPO=yourusername/toro
 REMOTE_DIR=/opt/toro
 REMOTE_BIN="$REMOTE_DIR/server/target/release/server"
-LOCAL_BIN=server/target/release/server
-
-echo "Compiling release"
-(cd ../../server; cargo build --release)
 
 echo "Starting deployment to $VPS_HOST"
 
@@ -24,14 +22,12 @@ ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl stop toro" || {
     exit 1
 }
 
-echo "Uploading new binary"
-scp "$LOCAL_BIN" "$VPS_USER@$VPS_HOST:$REMOTE_BIN" || {
-    echo "Failed to upload binary"
+echo "Downloading latest release binary"
+DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/server"
+ssh "$VPS_USER@$VPS_HOST" "curl -fL '$DOWNLOAD_URL' -o '$REMOTE_BIN' && chmod +x '$REMOTE_BIN'" || {
+    echo "Failed to download binary"
     exit 1
 }
-
-echo "Setting executable permission"
-ssh "$VPS_USER@$VPS_HOST" "chmod +x '$REMOTE_BIN'"
 
 echo "Restarting toro service"
 ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl start toro" || {
