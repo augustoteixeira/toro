@@ -19,7 +19,7 @@ Run once manually to verify migration and generate the API token:
 
 ```bash
 cd /opt/toro/server
-./target/release/server
+ROCKET_SECRET_KEY="$(openssl rand -base64 32)" ./target/release/server
 ```
 
 Note the printed API token — it is shown only once.
@@ -32,12 +32,19 @@ Install supervisor:
 sudo apt update && sudo apt install supervisor
 ```
 
-Create `/etc/supervisor/conf.d/toro.conf`:
+Generate a secret key for Rocket:
+
+```bash
+openssl rand -base64 32
+```
+
+Create `/etc/supervisor/conf.d/toro.conf` (paste the generated key):
 
 ```ini
 [program:toro]
 directory=/opt/toro/server
 command=/opt/toro/server/target/release/server
+environment=ROCKET_SECRET_KEY="paste-your-key-here"
 autostart=true
 autorestart=true
 stderr_logfile=/var/log/toro.err.log
