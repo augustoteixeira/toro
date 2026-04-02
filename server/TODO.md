@@ -27,7 +27,7 @@
 - [ ] 401 catcher for unauthenticated requests
 
 ## 7. Hardening
-- [ ] Rate limiting on `POST /readings` (per-token or per-IP)
+- [x] Rate limiting on `POST /readings` (per-token or per-IP)
 
 ## 8. Deployment
 - [ ] Deployment config (supervisord or Docker)

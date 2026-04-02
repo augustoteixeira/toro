@@ -1,7 +1,13 @@
+use std::net::IpAddr;
+use std::time::Duration;
+
 use maud::html;
 use rocket::http::Status;
 use rocket::serde::json::Json;
-use server::{Db, Reading, TokenAuthenticated, ensure_token, get_readings_for_day, insert_reading, migrate};
+use server::{
+    Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, get_readings_for_day,
+    insert_reading, migrate,
+};
 
 #[rocket::get("/")]
 fn index() -> maud::Markup {
@@ -19,8 +25,13 @@ fn index() -> maud::Markup {
 async fn post_reading(
     _auth: TokenAuthenticated,
     db: &rocket::State<Db>,
+    limiter: &rocket::State<RateLimiter>,
+    ip: IpAddr,
     reading: Json<Reading>,
 ) -> Status {
+    if limiter.too_many_attempts(ip, 10, Duration::from_secs(60)) {
+        return Status::TooManyRequests;
+    }
     match insert_reading(&db.0, &reading.into_inner()).await {
         Ok(_) => Status::Created,
         Err(_) => Status::UnprocessableEntity,
@@ -28,9 +39,17 @@ async fn post_reading(
 }
 
 #[rocket::get("/day/<date>")]
-async fn day(db: &rocket::State<Db>, date: &str) -> maud::Markup {
+async fn day(
+    db: &rocket::State<Db>,
+    limiter: &rocket::State<RateLimiter>,
+    ip: IpAddr,
+    date: &str,
+) -> (Status, maud::Markup) {
+    if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
+        return (Status::TooManyRequests, html! { "Too many requests" });
+    }
     let readings = get_readings_for_day(&db.0, date).await.unwrap_or_default();
-    html! {
+    let markup = html! {
         html {
             head { title { "Toro — " (date) } }
             body {
@@ -59,7 +78,8 @@ async fn day(db: &rocket::State<Db>, date: &str) -> maud::Markup {
                 }
             }
         }
-    }
+    };
+    (Status::Ok, markup)
 }
 
 #[rocket::main]
@@ -67,6 +87,7 @@ async fn main() -> Result<(), rocket::Error> {
     use rocket_db_pools::Database;
 
     let rocket = rocket::build()
+        .manage(RateLimiter::new())
         .attach(Db::init())
         .attach(rocket::fairing::AdHoc::try_on_ignite("Migrations", |rocket| async {
             match Db::fetch(&rocket) {

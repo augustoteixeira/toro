@@ -1,9 +1,35 @@
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use rand::RngCore;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
 use rocket::serde::Deserialize;
 use rocket::Request;
 use rocket_db_pools::{Database, sqlx};
+
+pub struct RateLimiter {
+    attempts: Mutex<HashMap<IpAddr, Vec<Instant>>>,
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn too_many_attempts(&self, ip: IpAddr, limit: usize, window: Duration) -> bool {
+        let mut attempts = self.attempts.lock().unwrap();
+        let now = Instant::now();
+        let timestamps = attempts.entry(ip).or_default();
+        timestamps.retain(|&t| now.duration_since(t) < window);
+        timestamps.push(now);
+        timestamps.len() > limit
+    }
+}
 
 #[derive(Database)]
 #[database("db")]
