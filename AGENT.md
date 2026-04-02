@@ -47,7 +47,7 @@ The server is built incrementally following the plan in `server/TODO.md`. For ea
   - `libclang-dev` and `libudev-dev` must be installed via `apt` before building the esp crate.
   - `ldproxy` must be installed via `cargo install ldproxy`.
   - The user must be in the `dialout` group to flash over USB.
-  - Port 8000 is often already in use on the dev machine. Manual `cargo run` will fail on socket bind, but Rocket fairings (migration, etc.) still execute before the bind attempt.
+  - Do **not** background `cargo run` with `&` to test the server — it creates zombie processes. Use `timeout 3s cargo run 2>&1` instead to run briefly and capture output cleanly.
 
 ## Server Architecture (current state)
 

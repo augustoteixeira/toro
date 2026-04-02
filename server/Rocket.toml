@@ -1,2 +1,5 @@
+[default]
+port = 8008
+
 [default.databases]
 db = { url = "data/db.sqlite" }

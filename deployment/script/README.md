@@ -63,7 +63,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/your.domain.com/privkey.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:8008;
         proxy_set_header X-Real-IP $remote_addr;
     }
 }
