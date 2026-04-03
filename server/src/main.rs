@@ -5,8 +5,8 @@ use maud::html;
 use rocket::http::Status;
 use rocket::serde::json::Json;
 use server::{
-    Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, get_readings_for_day,
-    insert_reading, migrate,
+    Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, generate_day_json,
+    get_readings_for_day, insert_reading, migrate,
 };
 
 #[rocket::get("/")]
@@ -32,8 +32,13 @@ async fn post_reading(
     if limiter.too_many_attempts(ip, 10, Duration::from_secs(60)) {
         return Status::TooManyRequests;
     }
-    match insert_reading(&db.0, &reading.into_inner()).await {
-        Ok(_) => Status::Created,
+    let reading = reading.into_inner();
+    let date = reading.hour.chars().take(10).collect::<String>();
+    match insert_reading(&db.0, &reading).await {
+        Ok(_) => {
+            let _ = generate_day_json(&db.0, &date).await;
+            Status::Created
+        }
         Err(_) => Status::UnprocessableEntity,
     }
 }
