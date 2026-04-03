@@ -51,109 +51,90 @@ async fn api_day(date: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
-fn day_chart_script(api_url: &str) -> String {
-    let script = r##"
-        const metrics = [
-            { field: "temperature", title: "Temperature (\u00b0C)", mark: "line" },
-            { field: "humidity", title: "Humidity (%)", mark: "line" },
-            { field: "wind_speed", title: "Wind Speed (km/h)", mark: "line" },
-            { field: "wind_direction", title: "Wind Direction (\u00b0)", mark: "line" },
-            { field: "luminosity", title: "Luminosity (lux)", mark: "line" },
-            { field: "rainfall", title: "Rainfall (mm)", mark: "bar" }
-        ];
-
-        const rendered = {};
-
-        function renderChart(index, data) {
-            const m = metrics[index];
-            if (rendered[m.field]) return;
-            rendered[m.field] = true;
-            const spec = {
-                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                "width": "container",
-                "height": 300,
-                "data": { "values": data },
-                "mark": { "type": m.mark, "tooltip": true },
-                "encoding": {
-                    "x": { "field": "hour", "type": "ordinal", "title": "Hour" },
-                    "y": { "field": m.field, "type": "quantitative", "title": m.title }
-                }
-            };
-            vegaEmbed("#chart-" + m.field, spec, { "actions": false });
-        }
-
-        fetch(API_URL).then(r => r.json()).then(data => {
-            data.forEach(d => { d.hour = d.hour.substring(11); });
-
-            // Render the first (visible) tab immediately
-            renderChart(0, data);
-
-            // Render other tabs when they become visible
-            UIkit.util.on(document, "shown", function(e) {
-                const switcher = document.querySelector(".uk-switcher");
-                if (!switcher) return;
-                const items = switcher.children;
-                for (let i = 0; i < items.length; i++) {
-                    if (items[i].classList.contains("uk-active")) {
-                        renderChart(i, data);
-                        break;
-                    }
-                }
-            });
-        });
-    "##;
-    format!("const API_URL = \"{}\";\n{}", api_url, script)
-}
-
 #[rocket::get("/day/<date>")]
 async fn day(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     date: &str,
-) -> (Status, maud::Markup) {
+) -> (Status, (ContentType, String)) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, html! { "Too many requests" });
+        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
     }
-    let api_url = format!("/api/day/{}", date);
-    let markup = html! {
-        html {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { "Toro — " (date) }
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
-                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
-                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
-                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
-                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
-            }
-            body {
-                div.uk-container.uk-margin-top {
-                    h1.uk-heading-small { (date) }
-                    ul uk-tab="" {
-                        li.uk-active { a href="#" { "Temperature" } }
-                        li { a href="#" { "Humidity" } }
-                        li { a href="#" { "Wind Speed" } }
-                        li { a href="#" { "Wind Direction" } }
-                        li { a href="#" { "Luminosity" } }
-                        li { a href="#" { "Rainfall" } }
-                    }
-                    ul.uk-switcher.uk-margin {
-                        li { div #chart-temperature {} }
-                        li { div #chart-humidity {} }
-                        li { div #chart-wind_speed {} }
-                        li { div #chart-wind_direction {} }
-                        li { div #chart-luminosity {} }
-                        li { div #chart-rainfall {} }
-                    }
-                }
-                script {
-                    (maud::PreEscaped(day_chart_script(&api_url)))
-                }
-            }
-        }
-    };
-    (Status::Ok, markup)
+    let page = format!(r##"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Toro — {date}</title>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+</head>
+<body>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
+
+  <div class="uk-container uk-margin-top">
+    <h1 class="uk-heading-small">{date}</h1>
+    <ul uk-tab>
+      <li class="uk-active"><a href="#">Temperature</a></li>
+      <li><a href="#">Humidity</a></li>
+      <li><a href="#">Wind Speed</a></li>
+      <li><a href="#">Wind Direction</a></li>
+      <li><a href="#">Luminosity</a></li>
+      <li><a href="#">Rainfall</a></li>
+    </ul>
+    <ul class="uk-switcher uk-margin">
+      <li><div id="chart-temperature"></div></li>
+      <li><div id="chart-humidity"></div></li>
+      <li><div id="chart-wind_speed"></div></li>
+      <li><div id="chart-wind_direction"></div></li>
+      <li><div id="chart-luminosity"></div></li>
+      <li><div id="chart-rainfall"></div></li>
+    </ul>
+  </div>
+  <script>
+    var metrics = [
+      {{ field: "temperature", title: "Temperature (\u00b0C)", mark: "line" }},
+      {{ field: "humidity", title: "Humidity (%)", mark: "line" }},
+      {{ field: "wind_speed", title: "Wind Speed (km/h)", mark: "line" }},
+      {{ field: "wind_direction", title: "Wind Direction (\u00b0)", mark: "line" }},
+      {{ field: "luminosity", title: "Luminosity (lux)", mark: "line" }},
+      {{ field: "rainfall", title: "Rainfall (mm)", mark: "bar" }}
+    ];
+    var chartData = null;
+
+    function renderChart(index) {{
+      var m = metrics[index];
+      var spec = {{
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": 600,
+        "height": 300,
+        "data": {{ "values": chartData }},
+        "mark": {{ "type": m.mark, "tooltip": true }},
+        "encoding": {{
+          "x": {{ "field": "hour", "type": "ordinal", "title": "Hour" }},
+          "y": {{ "field": m.field, "type": "quantitative", "title": m.title }}
+        }}
+      }};
+      vegaEmbed('#chart-' + m.field, spec, {{ "actions": false }});
+    }}
+
+    fetch("/api/day/{date}")
+      .then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        data.forEach(function(d) {{ d.hour = d.hour.substring(11); }});
+        chartData = data;
+        for (var i = 0; i < metrics.length; i++) {{
+          renderChart(i);
+        }}
+      }})
+      .catch(function(err) {{
+        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+      }});
+  </script>
+</body>
+</html>"##);
+    (Status::Ok, (ContentType::HTML, page))
 }
 
 #[rocket::main]
