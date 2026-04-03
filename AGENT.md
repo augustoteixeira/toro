@@ -56,16 +56,44 @@ The server is built incrementally following the plan in `server/TODO.md`. For ea
   - `migrate()` — bootstraps `meta` table, reads `schema_version`, runs `migrations/*.sql`
   - `ensure_token()` — on first run, generates a random API token, prints it once, stores bcrypt hash in `meta`
   - `TokenAuthenticated` — Rocket request guard; validates `Authorization: Bearer <token>` against bcrypt hash in `meta`
-- `server/src/main.rs` — thin binary entrypoint. Uses `#[rocket::main]` (not `#[launch]`) so we can run logic between `ignite()` and `launch()`.
-- `server/Rocket.toml` — database config: `data/db.sqlite`
+  - `RateLimiter` — sliding window rate limiter (per IP); 10/min on POST, 20/min on GETs
+  - `Reading` — hourly sensor row; derives `Serialize`, `Deserialize`, `FromRow`
+  - `AggregatedBucket` — time-aggregated stats row used by week and month charts; fields: `label`, `{metric}_mean`, `{metric}_std` for temp/humidity/wind_speed/luminosity; `wind_direction_mean` (vector-averaged); `rainfall_sum`, `rainfall_max`
+  - `insert_reading`, `get_readings_for_day/week/month` — DB queries
+  - `aggregate_week(monday, readings)` — 28 quarter-day buckets (Mon 0-6 … Sun 18-24)
+  - `aggregate_month(month, readings)` — one bucket per day
+  - `generate_day/week/month_json(pool, key)` — writes pre-computed JSON to `data/static/{day|week|month}/{key}.json`
+  - `get_all_dates/weeks/months(pool)` — enumerate all distinct time keys in the DB
+  - `monday_of(hour)`, `month_of(hour)` — derive week/month key from an hour string
+- `server/src/main.rs` — thin binary entrypoint. Uses `#[rocket::main]` (not `#[launch]`) so we can run logic between `ignite()` and `launch()`. Passes `--regenerate` flag to regenerate all static JSON without launching.
+- `server/Rocket.toml` — database config: `data/db.sqlite`, port 8008
 - `server/migrations/001-init.sql` — creates `hourly_readings` table, sets `schema_version = '1'`
-- `server/data/` — runtime data dir. `db.sqlite` is gitignored. Contains `fake_dump.sql` and a `justfile` with `reset` / `fill` recipes.
-- `server/tests/` — integration tests using in-memory SQLite pools (`tests/common.rs` helper). Test files: `test_migrate.rs`, `test_token.rs`, `test_auth.rs`. Run with `cargo test`.
+- `server/data/` — runtime data dir. `db.sqlite` gitignored. `data/static/{day,week,month}/` gitignored. `justfile` has `reset`, `generate`, `regenerate` recipes.
+- `server/data/generate_fake.py` — Python script generating ~3 years of realistic Goiás weather data with gaps and sensor errors. Run via `just generate`.
+- `server/tests/` — integration tests using in-memory SQLite pools. Test files: `test_migrate.rs`, `test_token.rs`, `test_auth.rs`, `test_readings.rs`, `test_day.rs`, `test_week.rs`, `test_rate_limit.rs`. Run with `cargo test`.
+- `deployment/script/` — `update_default` (SSH deploy script), `release` (creates GitHub release with binary), `README.md` (supervisor + nginx setup).
+
+## Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/readings` | Insert hourly reading (auth required); triggers JSON regeneration |
+| `GET`  | `/day/<date>` | HTML page with UIkit tabs + Vega-Lite charts (one per metric, 24 hourly points) |
+| `GET`  | `/week/<monday>` | HTML page with error bar charts (28 quarter-day buckets) |
+| `GET`  | `/month/<month>` | HTML page with error bar charts (one point per day) |
+| `GET`  | `/api/day/<date>` | Raw hourly JSON from `data/static/day/<date>.json` |
+| `GET`  | `/api/week/<monday>` | Aggregated week JSON from `data/static/week/<monday>.json` |
+| `GET`  | `/api/month/<month>` | Aggregated month JSON from `data/static/month/<month>.json` |
 
 ## Key Design Decisions
 
-- **ISO-8601 text keys** for time: `hourly_readings.hour` is TEXT (e.g. `"2026-03-15T14"`), primary key. No separate year/month/day entity tables.
-- **Summary tables** (daily/monthly) will be added later as separate flat tables keyed by ISO-8601 strings — not as foreign-key relationships.
+- **ISO-8601 text keys** for time: `hourly_readings.hour` is TEXT (e.g. `"2026-03-15T14"`), primary key. No relational date tables.
+- **Write-through pre-computation**: each `POST /readings` triggers regeneration of the day, week, and month JSON files. GET endpoints serve static files only — no DB queries on read.
+- **`--regenerate` flag**: `cargo run -- --regenerate` regenerates all static JSON from DB and exits without launching the server.
+- **Wind direction**: averaged via vector decomposition (speed as magnitude) rather than naive angle averaging.
+- **Rainfall**: stored as `rainfall_sum` (total per period) and `rainfall_max` (peak hourly intensity) in aggregated buckets.
 - **API token** (not password): auto-generated on first server start, stored as bcrypt hash in `meta` table under key `token_hash`. The plaintext is shown once and never stored.
-- **`meta` table** is a general-purpose key-value store for app config (`schema_version`, `token_hash`, future settings).
-- **`hourly_readings` columns**: `hour` (TEXT PK), `temperature`, `humidity`, `wind_speed`, `wind_direction`, `luminosity`, `rainfall` (all REAL). No `id` or `token_id` column — `token_id` lives in `meta`.
+- **`meta` table** is a general-purpose key-value store for app config (`schema_version`, `token_hash`).
+- **`hourly_readings` columns**: `hour` (TEXT PK), `temperature`, `humidity`, `wind_speed`, `wind_direction`, `luminosity`, `rainfall` (all REAL).
+- **Frontend stack**: UIkit (CDN) for tabs, Vega-Lite (CDN) for charts. Day page renders all charts on load. Week/month pages use error bars for most metrics.
+- **Deployment**: VPS behind nginx (HTTPS), process managed by supervisord. `ROCKET_SECRET_KEY` env var required in release mode (set in supervisor config).
