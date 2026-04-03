@@ -337,6 +337,25 @@ pub async fn generate_day_json(pool: &sqlx::SqlitePool, date: &str) -> Result<()
     Ok(())
 }
 
+pub async fn generate_week_json(pool: &sqlx::SqlitePool, monday: &str) -> Result<(), String> {
+    let readings = get_readings_for_week(pool, monday)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let buckets = aggregate_week(monday, &readings);
+
+    let json = rocket::serde::json::serde_json::to_string(&buckets)
+        .map_err(|e| e.to_string())?;
+
+    std::fs::create_dir_all("data/static/week")
+        .map_err(|e| e.to_string())?;
+
+    std::fs::write(format!("data/static/week/{}.json", monday), json)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 pub struct TokenAuthenticated;
 
 #[rocket::async_trait]

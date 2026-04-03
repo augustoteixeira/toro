@@ -1,6 +1,6 @@
 mod common;
 
-use server::{Reading, aggregate_week, get_readings_for_week, insert_reading};
+use server::{Reading, aggregate_week, generate_week_json, get_readings_for_week, insert_reading};
 
 fn reading(hour: &str, temp: f64) -> Reading {
     Reading {
@@ -226,4 +226,24 @@ async fn get_readings_for_week_returns_only_that_week() {
     assert_eq!(readings[0].hour, "2025-01-13T08");
     assert_eq!(readings[1].hour, "2025-01-15T14");
     assert_eq!(readings[2].hour, "2025-01-19T22");
+}
+
+#[tokio::test]
+async fn generate_week_json_writes_valid_file() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    insert_reading(&pool, &reading("2025-01-13T02", 20.0)).await.unwrap();
+    insert_reading(&pool, &reading("2025-01-13T14", 30.0)).await.unwrap();
+
+    generate_week_json(&pool, "2025-01-13").await.expect("generate failed");
+
+    let path = "data/static/week/2025-01-13.json";
+    let contents = std::fs::read_to_string(path).expect("file not found");
+    assert!(contents.contains("Mon 0-6"));
+    assert!(contents.contains("Mon 12-18"));
+    assert!(contents.contains("20.0"));
+    assert!(contents.contains("30.0"));
+
+    std::fs::remove_file(path).ok();
 }
