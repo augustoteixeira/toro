@@ -5,9 +5,7 @@ Rust firmware for the Toro weather station, running on an ESP32-C3 with `esp-idf
 ## Prerequisites
 
 ```bash
-sudo apt install libclang-dev libudev-dev pkg-config
-cargo install ldproxy
-cargo install cargo-espflash --version 3.3.0
+sudo apt install libclang-dev libudev-dev pkg-config python3.13-venv
 ```
 
 > `cargo-espflash` 4.x has a known compilation bug; use 3.3.0.
