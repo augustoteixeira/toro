@@ -1,5 +1,6 @@
 reset:
   rm -f db.sqlite
+  rm -rf static/day static/week static/month static/semester static/triennium
 
 generate:
   python3 generate_fake.py | sqlite3 db.sqlite
