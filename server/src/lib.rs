@@ -295,6 +295,25 @@ pub async fn get_readings_for_day(
     .await
 }
 
+pub async fn get_readings_for_week(
+    pool: &sqlx::SqlitePool,
+    monday: &str,
+) -> Result<Vec<Reading>, sqlx::Error> {
+    let monday_date = NaiveDate::parse_from_str(monday, "%Y-%m-%d")
+        .expect("invalid monday date");
+    let sunday = monday_date + chrono::Duration::days(6);
+    let start = format!("{}T00", monday);
+    let end = format!("{}T23", sunday);
+    sqlx::query_as::<_, Reading>(
+        "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
+         FROM hourly_readings WHERE hour >= ? AND hour <= ? ORDER BY hour",
+    )
+    .bind(&start)
+    .bind(&end)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn get_all_dates(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar("SELECT DISTINCT substr(hour, 1, 10) FROM hourly_readings ORDER BY 1")
         .fetch_all(pool)

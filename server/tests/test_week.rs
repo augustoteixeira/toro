@@ -1,4 +1,6 @@
-use server::{Reading, aggregate_week};
+mod common;
+
+use server::{Reading, aggregate_week, get_readings_for_week, insert_reading};
 
 fn reading(hour: &str, temp: f64) -> Reading {
     Reading {
@@ -195,4 +197,33 @@ fn aggregate_week_rainfall_sum_and_max() {
 
     assert_eq!(buckets[0].rainfall_sum, Some(5.5));
     assert_eq!(buckets[0].rainfall_max, Some(3.2));
+}
+
+// --- Database tests ---
+
+#[tokio::test]
+async fn get_readings_for_week_returns_only_that_week() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    // 2025-01-13 is a Monday
+    let in_week = vec![
+        reading("2025-01-13T08", 20.0),  // Monday
+        reading("2025-01-15T14", 25.0),  // Wednesday
+        reading("2025-01-19T22", 18.0),  // Sunday
+    ];
+    let out_of_week = vec![
+        reading("2025-01-12T23", 99.0),  // Sunday before
+        reading("2025-01-20T00", 99.0),  // Next Monday
+    ];
+
+    for r in in_week.iter().chain(out_of_week.iter()) {
+        insert_reading(&pool, r).await.unwrap();
+    }
+
+    let readings = get_readings_for_week(&pool, "2025-01-13").await.unwrap();
+    assert_eq!(readings.len(), 3);
+    assert_eq!(readings[0].hour, "2025-01-13T08");
+    assert_eq!(readings[1].hour, "2025-01-15T14");
+    assert_eq!(readings[2].hour, "2025-01-19T22");
 }
