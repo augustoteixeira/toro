@@ -4,7 +4,7 @@ set -o pipefail
 
 VPS_USER=youruser
 VPS_HOST=your.vps.ip.or.domain
-GITHUB_REPO=yourusername/toro
+GITHUB_REPO=augustoteixeira/toro
 REMOTE_DIR=/opt/toro
 REMOTE_BIN="$REMOTE_DIR/server/target/release/server"
 
@@ -24,6 +24,7 @@ ssh "$VPS_USER@$VPS_HOST" "sudo supervisorctl stop toro" || {
 
 echo "Downloading latest release binary"
 DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/latest/download/server"
+echo $DOWNLOAD_URL
 ssh "$VPS_USER@$VPS_HOST" "curl -fL '$DOWNLOAD_URL' -o '$REMOTE_BIN' && chmod +x '$REMOTE_BIN'" || {
     echo "Failed to download binary"
     exit 1
