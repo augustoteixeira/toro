@@ -33,12 +33,12 @@ async fn index(db: &rocket::State<Db>) -> maud::Markup {
         html {
             head {
                 meta charset="utf-8";
-                title { "Toró" }
+                title { "Toro" }
                 link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
             }
             body {
                 div.uk-container."uk-margin-top" {
-                    h1."uk-heading-small" { "Toro" }
+                    h1."uk-heading-small" { "Toró" }
                     div."uk-margin-top" {
                         @for year in &years {
                             a."uk-button"."uk-button-primary"."uk-margin-small-right"."uk-margin-small-bottom"
