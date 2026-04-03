@@ -1,7 +1,8 @@
 mod common;
 
 use server::{
-    Reading, aggregate_month, aggregate_week, generate_month_json, generate_week_json,
+    Reading, aggregate_month, aggregate_semester, aggregate_week,
+    generate_month_json, generate_semester_json, generate_week_json,
     get_readings_for_week, insert_reading,
 };
 
@@ -251,20 +252,73 @@ async fn generate_week_json_writes_valid_file() {
     std::fs::remove_file(path).ok();
 }
 
-// --- Month tests ---
+// --- Semester tests ---
 
 #[test]
-fn aggregate_month_produces_correct_number_of_buckets() {
-    // January has 31 days
-    let buckets = aggregate_month("2025-01", &[]);
-    assert_eq!(buckets.len(), 31);
-    // February 2025 (non-leap) has 28 days
-    let buckets = aggregate_month("2025-02", &[]);
-    assert_eq!(buckets.len(), 28);
-    // February 2024 (leap) has 29 days
-    let buckets = aggregate_month("2024-02", &[]);
-    assert_eq!(buckets.len(), 29);
+fn aggregate_semester_produces_26_buckets() {
+    // 2025-01-06 is a Monday
+    let buckets = aggregate_semester("2025-01-06", &[]);
+    assert_eq!(buckets.len(), 26);
 }
+
+#[test]
+fn aggregate_semester_labels_are_week_mondays() {
+    let buckets = aggregate_semester("2025-01-06", &[]);
+    assert_eq!(buckets[0].label, "2025-01-06");
+    assert_eq!(buckets[1].label, "2025-01-13");
+    assert_eq!(buckets[25].label, "2025-06-30");
+}
+
+#[test]
+fn aggregate_semester_buckets_readings_by_week() {
+    // 2025-01-06 is Monday of week 0; 2025-01-20 is Monday of week 2
+    let readings = vec![
+        reading("2025-01-06T10", 20.0),
+        reading("2025-01-07T14", 22.0),  // same week (week 0)
+        reading("2025-01-20T10", 30.0),  // week 2
+    ];
+    let buckets = aggregate_semester("2025-01-06", &readings);
+
+    assert_eq!(buckets[0].temperature_mean, Some(21.0));  // (20+22)/2
+    assert_eq!(buckets[2].temperature_mean, Some(30.0));
+    assert!(buckets[1].temperature_mean.is_none());
+}
+
+#[test]
+fn aggregate_semester_ignores_readings_outside_range() {
+    let readings = vec![
+        reading("2025-01-05T10", 99.0),  // Sunday before semester
+        reading("2025-01-06T10", 25.0),  // week 0 (in range)
+        reading("2025-07-14T10", 99.0),  // after 26 weeks (out of range)
+    ];
+    let buckets = aggregate_semester("2025-01-06", &readings);
+
+    assert_eq!(buckets[0].temperature_mean, Some(25.0));
+    for i in 1..26 {
+        assert!(buckets[i].temperature_mean.is_none());
+    }
+}
+
+#[tokio::test]
+async fn generate_semester_json_writes_valid_file() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    insert_reading(&pool, &reading("2025-01-06T10", 25.0)).await.unwrap();
+    insert_reading(&pool, &reading("2025-03-10T14", 32.0)).await.unwrap();
+
+    generate_semester_json(&pool, "2025-01-06").await.expect("generate failed");
+
+    let path = "data/static/semester/2025-01-06.json";
+    let contents = std::fs::read_to_string(path).expect("file not found");
+    assert!(contents.contains("2025-01-06"));
+    assert!(contents.contains("2025-03-10"));
+    assert!(contents.contains("25.0"));
+    assert!(contents.contains("32.0"));
+
+    std::fs::remove_file(path).ok();
+}
+
 
 #[test]
 fn aggregate_month_labels_are_full_dates() {

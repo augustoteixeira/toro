@@ -469,6 +469,119 @@ pub fn month_of(hour: &str) -> String {
     hour[..7].to_string()
 }
 
+const SEMESTER_WEEKS: usize = 26;
+
+pub async fn get_readings_for_semester(
+    pool: &sqlx::SqlitePool,
+    start_monday: &str,
+) -> Result<Vec<Reading>, sqlx::Error> {
+    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d")
+        .expect("invalid start monday");
+    let end = start + chrono::Duration::weeks(SEMESTER_WEEKS as i64) - chrono::Duration::days(1);
+    let start_str = format!("{}T00", start_monday);
+    let end_str = format!("{}T23", end.format("%Y-%m-%d"));
+    sqlx::query_as::<_, Reading>(
+        "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
+         FROM hourly_readings WHERE hour >= ? AND hour <= ? ORDER BY hour",
+    )
+    .bind(&start_str)
+    .bind(&end_str)
+    .fetch_all(pool)
+    .await
+}
+
+pub fn aggregate_semester(start_monday: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d")
+        .expect("invalid start monday");
+
+    let mut buckets: Vec<BucketCollector> =
+        (0..SEMESTER_WEEKS).map(|_| BucketCollector::new()).collect();
+
+    for r in readings {
+        let date = NaiveDate::parse_from_str(&r.hour[..10], "%Y-%m-%d").unwrap();
+        let day_offset = (date - start).num_days();
+        if day_offset < 0 {
+            continue;
+        }
+        let week_offset = day_offset / 7;
+        if (week_offset as usize) < SEMESTER_WEEKS {
+            let b = &mut buckets[week_offset as usize];
+            if let Some(v) = r.temperature { b.temperature.push(v); }
+            if let Some(v) = r.humidity { b.humidity.push(v); }
+            if let Some(v) = r.wind_speed { b.wind_speed.push(v); }
+            if let (Some(s), Some(d)) = (r.wind_speed, r.wind_direction) {
+                b.wind_speed_for_dir.push(s);
+                b.wind_direction.push(d);
+            }
+            if let Some(v) = r.luminosity { b.luminosity.push(v); }
+            if let Some(v) = r.rainfall { b.rainfall.push(v); }
+        }
+    }
+
+    (0..SEMESTER_WEEKS)
+        .map(|i| {
+            let week_start = start + chrono::Duration::weeks(i as i64);
+            let label = week_start.format("%Y-%m-%d").to_string();
+            collector_to_bucket(label, &buckets[i])
+        })
+        .collect()
+}
+
+pub async fn generate_semester_json(
+    pool: &sqlx::SqlitePool,
+    start_monday: &str,
+) -> Result<(), String> {
+    let readings = get_readings_for_semester(pool, start_monday)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let buckets = aggregate_semester(start_monday, &readings);
+
+    let json = rocket::serde::json::serde_json::to_string(&buckets)
+        .map_err(|e| e.to_string())?;
+
+    std::fs::create_dir_all("data/static/semester")
+        .map_err(|e| e.to_string())?;
+
+    std::fs::write(format!("data/static/semester/{}.json", start_monday), json)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Returns all distinct semester start Mondays (every 26 weeks) that overlap with the data.
+pub async fn get_all_semesters(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    let dates: Vec<String> = get_all_dates(pool).await?;
+    if dates.is_empty() {
+        return Ok(vec![]);
+    }
+    // Find the earliest Monday in the data
+    let first = NaiveDate::parse_from_str(&dates[0], "%Y-%m-%d").unwrap();
+    let first_monday = first - chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
+    let last = NaiveDate::parse_from_str(dates.last().unwrap(), "%Y-%m-%d").unwrap();
+
+    let mut semesters = vec![];
+    let mut cursor = first_monday;
+    while cursor <= last {
+        semesters.push(cursor.format("%Y-%m-%d").to_string());
+        cursor += chrono::Duration::weeks(SEMESTER_WEEKS as i64);
+    }
+    Ok(semesters)
+}
+
+/// Given a reading's hour string, return the semester start Monday it belongs to.
+pub fn semester_start_of(hour: &str) -> String {
+    let date = NaiveDate::parse_from_str(&hour[..10], "%Y-%m-%d")
+        .expect("invalid date in hour string");
+    let monday = date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
+    // Find how many 26-week periods since the Unix epoch Monday (1970-01-05)
+    let epoch_monday = NaiveDate::from_ymd_opt(1970, 1, 5).unwrap();
+    let weeks_since_epoch = (monday - epoch_monday).num_weeks();
+    let semester_index = weeks_since_epoch.div_euclid(SEMESTER_WEEKS as i64);
+    let start = epoch_monday + chrono::Duration::weeks(semester_index * SEMESTER_WEEKS as i64);
+    start.format("%Y-%m-%d").to_string()
+}
+
 pub struct TokenAuthenticated;
 
 #[rocket::async_trait]
