@@ -16,12 +16,38 @@ use server::{
 };
 
 #[rocket::get("/")]
-fn index() -> maud::Markup {
+async fn index(db: &rocket::State<Db>) -> maud::Markup {
+    // Collect distinct years from the data
+    let years: Vec<i32> = {
+        let months = server::get_all_months(db).await.unwrap_or_default();
+        let mut ys: Vec<i32> = months.iter()
+            .map(|m| m[..4].parse().unwrap_or(0))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        ys
+    };
+
     html! {
+        (maud::DOCTYPE)
         html {
-            head { title { "Toro" } }
+            head {
+                meta charset="utf-8";
+                title { "Toro" }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+            }
             body {
-                h1 { "Hello, world!" }
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { "Toro" }
+                    div."uk-margin-top" {
+                        @for year in &years {
+                            a."uk-button"."uk-button-primary"."uk-margin-small-right"."uk-margin-small-bottom"
+                              href={ "/triennium/" (year - 1) } {
+                                (year)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
