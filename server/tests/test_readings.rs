@@ -2,7 +2,7 @@ mod common;
 
 use rocket::http::{ContentType, Header, Status};
 use rocket::local::asynchronous::Client;
-use server::{Db, Reading, TokenAuthenticated, insert_reading};
+use server::{Db, Reading, TokenAuthenticated, generate_day_json, insert_reading};
 use sqlx::Row;
 
 #[rocket::post("/readings", data = "<reading>")]
@@ -11,8 +11,13 @@ async fn post_reading(
     db: &rocket::State<Db>,
     reading: rocket::serde::json::Json<Reading>,
 ) -> Status {
-    match insert_reading(&db.0, &reading.into_inner()).await {
-        Ok(_) => Status::Created,
+    let reading = reading.into_inner();
+    let date = reading.hour.chars().take(10).collect::<String>();
+    match insert_reading(&db.0, &reading).await {
+        Ok(_) => {
+            let _ = generate_day_json(&db.0, &date).await;
+            Status::Created
+        }
         Err(_) => Status::UnprocessableEntity,
     }
 }
@@ -87,6 +92,36 @@ async fn post_with_valid_token_inserts_row() {
         .await;
 
     assert_eq!(response.status(), Status::Created);
+}
+
+#[tokio::test]
+async fn post_generates_day_json() {
+    let (client, token) = setup().await;
+
+    let response = client
+        .post("/readings")
+        .header(ContentType::JSON)
+        .header(Header::new("Authorization", format!("Bearer {}", token)))
+        .body(r#"{
+            "hour": "2026-04-01T12",
+            "temperature": 22.0,
+            "humidity": 55.0,
+            "wind_speed": 6.0,
+            "wind_direction": 180.0,
+            "luminosity": 500.0,
+            "rainfall": 0.0
+        }"#)
+        .dispatch()
+        .await;
+
+    assert_eq!(response.status(), Status::Created);
+
+    let path = "data/static/day/2026-04-01.json";
+    let contents = std::fs::read_to_string(path).expect("JSON file not generated after POST");
+    assert!(contents.contains("2026-04-01T12"));
+    assert!(contents.contains("22.0"));
+
+    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]
