@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use chrono::NaiveDate;
 use rand::RngCore;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
@@ -103,6 +104,108 @@ pub struct Reading {
     pub wind_direction: Option<f64>,
     pub luminosity: Option<f64>,
     pub rainfall: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(crate = "rocket::serde")]
+pub struct WeekBucket {
+    pub label: String,
+    pub temperature_mean: Option<f64>,
+    pub temperature_std: Option<f64>,
+    pub humidity_mean: Option<f64>,
+    pub humidity_std: Option<f64>,
+    pub wind_speed_mean: Option<f64>,
+    pub wind_speed_std: Option<f64>,
+    pub wind_direction_mean: Option<f64>,
+    pub wind_direction_std: Option<f64>,
+    pub luminosity_mean: Option<f64>,
+    pub luminosity_std: Option<f64>,
+    pub rainfall_mean: Option<f64>,
+    pub rainfall_std: Option<f64>,
+}
+
+fn mean_and_std(values: &[f64]) -> Option<(f64, f64)> {
+    if values.is_empty() {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    Some((round2(mean), round2(variance.sqrt())))
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const QUARTER_LABELS: [&str; 4] = ["0-6", "6-12", "12-18", "18-24"];
+
+/// Given the Monday date string (e.g. "2025-01-13"), compute the bucket index
+/// (0..28) for a reading's hour string (e.g. "2025-01-15T14").
+/// Returns None if the reading doesn't belong to this week.
+fn bucket_index(monday: &NaiveDate, hour_str: &str) -> Option<usize> {
+    let date_str = &hour_str[..10];
+    let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+    let day_offset = (date - *monday).num_days();
+    if !(0..7).contains(&day_offset) {
+        return None;
+    }
+    let hour: usize = hour_str[11..].parse().ok()?;
+    let quarter = hour / 6;
+    Some(day_offset as usize * 4 + quarter)
+}
+
+pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
+    let monday_date = NaiveDate::parse_from_str(monday, "%Y-%m-%d")
+        .expect("invalid monday date");
+
+    // Collect values per bucket per metric
+    let mut buckets: Vec<[Vec<f64>; 6]> = (0..28)
+        .map(|_| [vec![], vec![], vec![], vec![], vec![], vec![]])
+        .collect();
+
+    for r in readings {
+        if let Some(idx) = bucket_index(&monday_date, &r.hour) {
+            if let Some(v) = r.temperature { buckets[idx][0].push(v); }
+            if let Some(v) = r.humidity { buckets[idx][1].push(v); }
+            if let Some(v) = r.wind_speed { buckets[idx][2].push(v); }
+            if let Some(v) = r.wind_direction { buckets[idx][3].push(v); }
+            if let Some(v) = r.luminosity { buckets[idx][4].push(v); }
+            if let Some(v) = r.rainfall { buckets[idx][5].push(v); }
+        }
+    }
+
+    (0..28)
+        .map(|i| {
+            let day = i / 4;
+            let quarter = i % 4;
+            let label = format!("{} {}", DAY_NAMES[day], QUARTER_LABELS[quarter]);
+
+            let temp = mean_and_std(&buckets[i][0]);
+            let hum = mean_and_std(&buckets[i][1]);
+            let wind = mean_and_std(&buckets[i][2]);
+            let wdir = mean_and_std(&buckets[i][3]);
+            let lux = mean_and_std(&buckets[i][4]);
+            let rain = mean_and_std(&buckets[i][5]);
+
+            WeekBucket {
+                label,
+                temperature_mean: temp.map(|t| t.0),
+                temperature_std: temp.map(|t| t.1),
+                humidity_mean: hum.map(|t| t.0),
+                humidity_std: hum.map(|t| t.1),
+                wind_speed_mean: wind.map(|t| t.0),
+                wind_speed_std: wind.map(|t| t.1),
+                wind_direction_mean: wdir.map(|t| t.0),
+                wind_direction_std: wdir.map(|t| t.1),
+                luminosity_mean: lux.map(|t| t.0),
+                luminosity_std: lux.map(|t| t.1),
+                rainfall_mean: rain.map(|t| t.0),
+                rainfall_std: rain.map(|t| t.1),
+            }
+        })
+        .collect()
 }
 
 pub async fn insert_reading(pool: &sqlx::SqlitePool, r: &Reading) -> Result<(), sqlx::Error> {

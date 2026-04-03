@@ -10,6 +10,7 @@ rocket = { version = "0.5", features = ["secrets", "json"] }
 rocket_db_pools = { version = "0.2", features = ["sqlx_sqlite"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "macros"] }
 bcrypt = "0.17"
+chrono = "0.4"
 hex = "0.4"
 rand = "0.8"
 
