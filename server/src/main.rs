@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 
 use maud::html;
 use rocket::http::{ContentType, Status};
@@ -392,138 +392,226 @@ async fn api_month(month: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
+/// Returns all Mondays whose week touches the given month.
+fn weeks_touching_month(month: &str) -> Vec<String> {
+    let year: i32 = month[..4].parse().unwrap();
+    let mo: u32 = month[5..7].parse().unwrap();
+    let first_day = NaiveDate::from_ymd_opt(year, mo, 1).unwrap();
+    let last_day = NaiveDate::from_ymd_opt(
+        if mo == 12 { year + 1 } else { year },
+        if mo == 12 { 1 } else { mo + 1 },
+        1,
+    )
+    .unwrap()
+        - chrono::Duration::days(1);
+
+    // Monday of the week containing the first day
+    let first_monday = first_day
+        - chrono::Duration::days(first_day.weekday().num_days_from_monday() as i64);
+    // Monday of the week containing the last day
+    let last_monday = last_day
+        - chrono::Duration::days(last_day.weekday().num_days_from_monday() as i64);
+
+    let mut mondays = vec![];
+    let mut cursor = first_monday;
+    while cursor <= last_monday {
+        mondays.push(cursor.format("%Y-%m-%d").to_string());
+        cursor += chrono::Duration::weeks(1);
+    }
+    mondays
+}
+
+fn prev_month(month: &str) -> String {
+    let year: i32 = month[..4].parse().unwrap();
+    let mo: u32 = month[5..7].parse().unwrap();
+    if mo == 1 {
+        format!("{}-12", year - 1)
+    } else {
+        format!("{}-{:02}", year, mo - 1)
+    }
+}
+
+fn next_month(month: &str) -> String {
+    let year: i32 = month[..4].parse().unwrap();
+    let mo: u32 = month[5..7].parse().unwrap();
+    if mo == 12 {
+        format!("{}-01", year + 1)
+    } else {
+        format!("{}-{:02}", year, mo + 1)
+    }
+}
+
 #[rocket::get("/month/<month>")]
 async fn month(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     month: &str,
-) -> (Status, (ContentType, String)) {
+) -> (Status, maud::Markup) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+        return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let page = format!(r##"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Toro — {month}</title>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
-</head>
-<body>
-  <div class="uk-container uk-margin-top">
-    <h1 class="uk-heading-small">{month}</h1>
-    <ul uk-tab>
-      <li class="uk-active"><a href="#">Temperature</a></li>
-      <li><a href="#">Humidity</a></li>
-      <li><a href="#">Wind Speed</a></li>
-      <li><a href="#">Wind Direction</a></li>
-      <li><a href="#">Luminosity</a></li>
-      <li><a href="#">Rainfall</a></li>
-    </ul>
-    <ul class="uk-switcher uk-margin">
-      <li><div id="chart-temperature"></div></li>
-      <li><div id="chart-humidity"></div></li>
-      <li><div id="chart-wind_speed"></div></li>
-      <li><div id="chart-wind_direction"></div></li>
-      <li><div id="chart-luminosity"></div></li>
-      <li><div id="chart-rainfall"></div></li>
-    </ul>
-  </div>
-  <script>
-    var errorBarMetrics = [
-      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
-      {{ field: "humidity", title: "Humidity (%)" }},
-      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
-      {{ field: "luminosity", title: "Luminosity (lux)" }}
-    ];
 
-    fetch("/api/month/{month}")
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        errorBarMetrics.forEach(function(m) {{
-          var transformed = data.map(function(d) {{
-            return {{
-              label: d.label,
-              mean: d[m.field + "_mean"],
-              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
-              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
-            }};
-          }});
-          vegaEmbed('#chart-' + m.field, {{
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "width": 700, "height": 300,
-            "data": {{ "values": transformed }},
-            "encoding": {{
-              "x": {{ "field": "label", "type": "ordinal", "title": "Day",
-                       "axis": {{ "labelAngle": -45 }} }}
-            }},
-            "layer": [
-              {{
-                "mark": {{ "type": "line", "tooltip": true }},
-                "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }}
-              }},
-              {{
-                "mark": {{ "type": "errorbar" }},
-                "encoding": {{
-                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
-                  "y2": {{ "field": "hi" }}
-                }}
-              }}
-            ]
-          }}, {{ "actions": false }});
-        }});
+    // Up: semester containing the 15th of this month
+    let sem_key = semester_start_of(&format!("{}-15T00", month));
 
-        // Wind direction: line + point, no error bars
-        vegaEmbed('#chart-wind_direction', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, direction: d.wind_direction_mean }};
-          }}) }},
-          "mark": {{ "type": "line", "tooltip": true, "point": true }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Day",
-                     "axis": {{ "labelAngle": -45 }} }},
-            "y": {{ "field": "direction", "type": "quantitative",
-                     "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
-          }}
-        }}, {{ "actions": false }});
+    // Prev / next month
+    let prev = {
+        let p = prev_month(month);
+        if static_exists("month", &p) { Some(p) } else { None }
+    };
+    let next = {
+        let n = next_month(month);
+        if static_exists("month", &n) { Some(n) } else { None }
+    };
 
-        // Rainfall: bar (sum) + point (max)
-        vegaEmbed('#chart-rainfall', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }};
-          }}) }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Day",
-                     "axis": {{ "labelAngle": -45 }} }}
-          }},
-          "layer": [
-            {{
-              "mark": {{ "type": "bar", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }}
-            }},
-            {{
-              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }}
-            }}
-          ]
-        }}, {{ "actions": false }});
-      }})
-      .catch(function(err) {{
-        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+    // Week buttons
+    let weeks: Vec<(String, bool)> = weeks_touching_month(month)
+        .into_iter()
+        .map(|m| { let e = static_exists("week", &m); (m, e) })
+        .collect();
+
+    let markup = html! {
+        (maud::DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                title { "Toro — " (month) }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+            }
+            body {
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { (month) }
+
+                    // Up: semester button
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        a."uk-button"."uk-button-default" href={ "/semester/" (sem_key) } {
+                            "Semester of " (sem_key)
+                        }
+                    }
+
+                    // Prev / Next month
+                    div."uk-margin-small-bottom" {
+                        @if let Some(ref p) = prev {
+                            a."uk-button"."uk-button-default" href={ "/month/" (p) } {
+                                "← " (p)
+                            }
+                        }
+                        @if let Some(ref n) = next {
+                            div style="float:right" {
+                                a."uk-button"."uk-button-default" href={ "/month/" (n) } {
+                                    (n) " →"
+                                }
+                            }
+                        }
+                    }
+                    div style="clear:both" {}
+
+                    // Week buttons
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        @for (monday, exists) in &weeks {
+                            @if *exists {
+                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/week/" (monday) } {
+                                    "W " (monday)
+                                }
+                            }
+                        }
+                    }
+
+                    ul uk-tab="" {
+                        li."uk-active" { a href="#" { "Temperature" } }
+                        li { a href="#" { "Humidity" } }
+                        li { a href="#" { "Wind Speed" } }
+                        li { a href="#" { "Wind Direction" } }
+                        li { a href="#" { "Luminosity" } }
+                        li { a href="#" { "Rainfall" } }
+                    }
+                    ul."uk-switcher"."uk-margin" {
+                        li { div #chart-temperature {} }
+                        li { div #chart-humidity {} }
+                        li { div #chart-wind_speed {} }
+                        li { div #chart-wind_direction {} }
+                        li { div #chart-luminosity {} }
+                        li { div #chart-rainfall {} }
+                    }
+                }
+                script {
+                    (maud::PreEscaped(month_chart_script(month)))
+                }
+            }
+        }
+    };
+    (Status::Ok, markup)
+}
+
+fn month_chart_script(month: &str) -> String {
+    format!(r##"
+var errorBarMetrics = [
+  {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+  {{ field: "humidity", title: "Humidity (%)" }},
+  {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+  {{ field: "luminosity", title: "Luminosity (lux)" }}
+];
+fetch("/api/month/{month}")
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    errorBarMetrics.forEach(function(m) {{
+      var transformed = data.map(function(d) {{
+        return {{
+          label: d.label, mean: d[m.field + "_mean"],
+          lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+          hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+        }};
       }});
-  </script>
-</body>
-</html>"##);
-    (Status::Ok, (ContentType::HTML, page))
+      vegaEmbed("#chart-" + m.field, {{
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": 700, "height": 300,
+        "data": {{ "values": transformed }},
+        "encoding": {{
+          "x": {{ "field": "label", "type": "ordinal", "title": "Day", "axis": {{ "labelAngle": -45 }} }}
+        }},
+        "layer": [
+          {{ "mark": {{ "type": "line", "tooltip": true }},
+             "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }} }},
+          {{ "mark": {{ "type": "errorbar" }},
+             "encoding": {{ "y": {{ "field": "lo", "type": "quantitative", "title": m.title }}, "y2": {{ "field": "hi" }} }} }}
+        ]
+      }}, {{ "actions": false }});
+    }});
+    vegaEmbed("#chart-wind_direction", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, direction: d.wind_direction_mean }}; }}) }},
+      "mark": {{ "type": "line", "tooltip": true, "point": true }},
+      "encoding": {{
+        "x": {{ "field": "label", "type": "ordinal", "title": "Day", "axis": {{ "labelAngle": -45 }} }},
+        "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
+      }}
+    }}, {{ "actions": false }});
+    vegaEmbed("#chart-rainfall", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }}; }}) }},
+      "encoding": {{
+        "x": {{ "field": "label", "type": "ordinal", "title": "Day", "axis": {{ "labelAngle": -45 }} }}
+      }},
+      "layer": [
+        {{ "mark": {{ "type": "bar", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }} }},
+        {{ "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }} }}
+      ]
+    }}, {{ "actions": false }});
+  }})
+  .catch(function(err) {{
+    document.getElementById("chart-temperature").textContent = "Error: " + err;
+  }});
+    "##)
 }
 
 #[rocket::get("/api/semester/<start>")]
