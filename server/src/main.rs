@@ -1,6 +1,8 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
+use chrono::NaiveDate;
+
 use maud::html;
 use rocket::http::{ContentType, Status};
 use rocket::serde::json::Json;
@@ -58,90 +60,129 @@ async fn api_day(date: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
+fn day_exists(date: &str) -> bool {
+    std::path::Path::new(&format!("data/static/day/{}.json", date)).exists()
+}
+
 #[rocket::get("/day/<date>")]
 async fn day(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     date: &str,
-) -> (Status, (ContentType, String)) {
+) -> (Status, maud::Markup) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+        return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let page = format!(r##"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Toro — {date}</title>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-</head>
-<body>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
 
-  <div class="uk-container uk-margin-top">
-    <h1 class="uk-heading-small">{date}</h1>
-    <ul uk-tab>
-      <li class="uk-active"><a href="#">Temperature</a></li>
-      <li><a href="#">Humidity</a></li>
-      <li><a href="#">Wind Speed</a></li>
-      <li><a href="#">Wind Direction</a></li>
-      <li><a href="#">Luminosity</a></li>
-      <li><a href="#">Rainfall</a></li>
-    </ul>
-    <ul class="uk-switcher uk-margin">
-      <li><div id="chart-temperature"></div></li>
-      <li><div id="chart-humidity"></div></li>
-      <li><div id="chart-wind_speed"></div></li>
-      <li><div id="chart-wind_direction"></div></li>
-      <li><div id="chart-luminosity"></div></li>
-      <li><div id="chart-rainfall"></div></li>
-    </ul>
-  </div>
-  <script>
-    var metrics = [
-      {{ field: "temperature", title: "Temperature (\u00b0C)", mark: "line" }},
-      {{ field: "humidity", title: "Humidity (%)", mark: "line" }},
-      {{ field: "wind_speed", title: "Wind Speed (km/h)", mark: "line" }},
-      {{ field: "wind_direction", title: "Wind Direction (\u00b0)", mark: "line" }},
-      {{ field: "luminosity", title: "Luminosity (lux)", mark: "line" }},
-      {{ field: "rainfall", title: "Rainfall (mm)", mark: "bar" }}
-    ];
-    var chartData = null;
+    let monday = monday_of(&format!("{}T00", date));
+    let week_label = format!("Week of {}", monday);
 
-    function renderChart(index) {{
-      var m = metrics[index];
-      var spec = {{
-        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-        "width": 600,
-        "height": 300,
-        "data": {{ "values": chartData }},
-        "mark": {{ "type": m.mark, "tooltip": true }},
-        "encoding": {{
-          "x": {{ "field": "hour", "type": "ordinal", "title": "Hour" }},
-          "y": {{ "field": m.field, "type": "quantitative", "title": m.title }}
-        }}
-      }};
-      vegaEmbed('#chart-' + m.field, spec, {{ "actions": false }});
+    let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+    let prev = parsed
+        .map(|d| (d - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+        .filter(|d| day_exists(d));
+    let next = parsed
+        .map(|d| (d + chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
+        .filter(|d| day_exists(d));
+
+    let markup = html! {
+        (maud::DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                title { "Toro — " (date) }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+            }
+            body {
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { (date) }
+
+                    // Week button — centered
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        a."uk-button"."uk-button-default" href={ "/week/" (monday) } {
+                            (week_label)
+                        }
+                    }
+
+                    // Prev / Next day buttons
+                    div."uk-margin-small-bottom" {
+                        @if let Some(ref p) = prev {
+                            a."uk-button"."uk-button-default" href={ "/day/" (p) } {
+                                "← " (p)
+                            }
+                        }
+                        @if let Some(ref n) = next {
+                            div style="float:right" {
+                                a."uk-button"."uk-button-default" href={ "/day/" (n) } {
+                                    (n) " →"
+                                }
+                            }
+                        }
+                    }
+                    div style="clear:both" {}
+
+                    ul uk-tab="" {
+                        li."uk-active" { a href="#" { "Temperature" } }
+                        li { a href="#" { "Humidity" } }
+                        li { a href="#" { "Wind Speed" } }
+                        li { a href="#" { "Wind Direction" } }
+                        li { a href="#" { "Luminosity" } }
+                        li { a href="#" { "Rainfall" } }
+                    }
+                    ul."uk-switcher"."uk-margin" {
+                        li { div #chart-temperature {} }
+                        li { div #chart-humidity {} }
+                        li { div #chart-wind_speed {} }
+                        li { div #chart-wind_direction {} }
+                        li { div #chart-luminosity {} }
+                        li { div #chart-rainfall {} }
+                    }
+                }
+                script {
+                    (maud::PreEscaped(format!(r##"
+var metrics = [
+  {{ field: "temperature", title: "Temperature (\u00b0C)", mark: "line" }},
+  {{ field: "humidity", title: "Humidity (%)", mark: "line" }},
+  {{ field: "wind_speed", title: "Wind Speed (km/h)", mark: "line" }},
+  {{ field: "wind_direction", title: "Wind Direction (\u00b0)", mark: "line" }},
+  {{ field: "luminosity", title: "Luminosity (lux)", mark: "line" }},
+  {{ field: "rainfall", title: "Rainfall (mm)", mark: "bar" }}
+];
+var chartData = null;
+function renderChart(index) {{
+  var m = metrics[index];
+  var spec = {{
+    "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+    "width": 600, "height": 300,
+    "data": {{ "values": chartData }},
+    "mark": {{ "type": m.mark, "tooltip": true }},
+    "encoding": {{
+      "x": {{ "field": "hour", "type": "ordinal", "title": "Hour" }},
+      "y": {{ "field": m.field, "type": "quantitative", "title": m.title }}
     }}
-
-    fetch("/api/day/{date}")
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        data.forEach(function(d) {{ d.hour = d.hour.substring(11); }});
-        chartData = data;
-        for (var i = 0; i < metrics.length; i++) {{
-          renderChart(i);
-        }}
-      }})
-      .catch(function(err) {{
-        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
-      }});
-  </script>
-</body>
-</html>"##);
-    (Status::Ok, (ContentType::HTML, page))
+  }};
+  vegaEmbed("#chart-" + m.field, spec, {{ "actions": false }});
+}}
+fetch("/api/day/{date}")
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    data.forEach(function(d) {{ d.hour = d.hour.substring(11); }});
+    chartData = data;
+    for (var i = 0; i < metrics.length; i++) {{ renderChart(i); }}
+  }})
+  .catch(function(err) {{
+    document.getElementById("chart-temperature").textContent = "Error: " + err;
+  }});
+                    "##)))
+                }
+            }
+        }
+    };
+    (Status::Ok, markup)
 }
 
 #[rocket::get("/api/week/<monday>")]
