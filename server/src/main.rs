@@ -11,7 +11,7 @@ use server::{
     generate_day_json, generate_month_json, generate_semester_json, generate_triennium_json,
     generate_week_json,
     get_all_dates, get_all_months, get_all_semesters, get_all_triennia, get_all_weeks,
-    insert_reading, migrate, monday_of, month_of, semester_start_of, triennium_start_of,
+    insert_reading, migrate, monday_of, month_of, semester_start_of, triennia_containing,
 };
 
 #[rocket::get("/")]
@@ -45,7 +45,9 @@ async fn post_reading(
             let _ = generate_week_json(&db.0, &monday_of(&reading.hour)).await;
             let _ = generate_month_json(&db.0, &month_of(&reading.hour)).await;
             let _ = generate_semester_json(&db.0, &semester_start_of(&reading.hour)).await;
-            let _ = generate_triennium_json(&db.0, &triennium_start_of(&reading.hour)).await;
+            for tri_start in triennia_containing(&reading.hour) {
+                let _ = generate_triennium_json(&db.0, &tri_start).await;
+            }
             Status::Created
         }
         Err(_) => Status::UnprocessableEntity,
@@ -622,136 +624,211 @@ async fn api_semester(start: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
+/// Months that a semester (26 weeks starting at monday) touches.
+fn months_in_semester(start_monday: &str) -> Vec<String> {
+    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d").unwrap();
+    let end = start + chrono::Duration::weeks(26) - chrono::Duration::days(1);
+    let mut months = vec![];
+    let mut cursor_y = start.year();
+    let mut cursor_m = start.month();
+    loop {
+        months.push(format!("{}-{:02}", cursor_y, cursor_m));
+        if cursor_y == end.year() && cursor_m == end.month() {
+            break;
+        }
+        if cursor_m == 12 { cursor_y += 1; cursor_m = 1; } else { cursor_m += 1; }
+    }
+    months
+}
+
+/// The triennium whose middle year contains the given semester.
+/// Middle year of triennium starting YYYY-MM-01 is YYYY+1.
+/// We find the triennium where start_year+1 contains the semester's midpoint month.
+fn triennium_for_semester(start_monday: &str) -> String {
+    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d").unwrap();
+    let midpoint = start + chrono::Duration::weeks(13); // middle of semester
+    let mid_month = format!("{}-{:02}T15", midpoint.year(), midpoint.month());
+    // Among all triennia containing this month, pick the one whose middle year matches
+    let candidates = triennia_containing(&mid_month);
+    // Middle year of triennium YYYY-MM-01 = YYYY+1
+    // We want the one where midpoint.year() == start_year + 1
+    for c in &candidates {
+        let tri_year: i32 = c[..4].parse().unwrap();
+        if tri_year + 1 == midpoint.year() {
+            return c.clone();
+        }
+    }
+    // Fallback: first candidate
+    candidates.into_iter().next().unwrap_or_default()
+}
+
 #[rocket::get("/semester/<start>")]
 async fn semester(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     start: &str,
-) -> (Status, (ContentType, String)) {
+) -> (Status, maud::Markup) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+        return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let page = format!(r##"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Toro — Semester {start}</title>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
-</head>
-<body>
-  <div class="uk-container uk-margin-top">
-    <h1 class="uk-heading-small">Semester from {start}</h1>
-    <ul uk-tab>
-      <li class="uk-active"><a href="#">Temperature</a></li>
-      <li><a href="#">Humidity</a></li>
-      <li><a href="#">Wind Speed</a></li>
-      <li><a href="#">Wind Direction</a></li>
-      <li><a href="#">Luminosity</a></li>
-      <li><a href="#">Rainfall</a></li>
-    </ul>
-    <ul class="uk-switcher uk-margin">
-      <li><div id="chart-temperature"></div></li>
-      <li><div id="chart-humidity"></div></li>
-      <li><div id="chart-wind_speed"></div></li>
-      <li><div id="chart-wind_direction"></div></li>
-      <li><div id="chart-luminosity"></div></li>
-      <li><div id="chart-rainfall"></div></li>
-    </ul>
-  </div>
-  <script>
-    var errorBarMetrics = [
-      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
-      {{ field: "humidity", title: "Humidity (%)" }},
-      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
-      {{ field: "luminosity", title: "Luminosity (lux)" }}
-    ];
 
-    fetch("/api/semester/{start}")
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        errorBarMetrics.forEach(function(m) {{
-          var transformed = data.map(function(d) {{
-            return {{
-              label: d.label,
-              mean: d[m.field + "_mean"],
-              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
-              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
-            }};
-          }});
-          vegaEmbed('#chart-' + m.field, {{
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "width": 700, "height": 300,
-            "data": {{ "values": transformed }},
-            "encoding": {{
-              "x": {{ "field": "label", "type": "ordinal", "title": "Week",
-                       "axis": {{ "labelAngle": -45 }} }}
-            }},
-            "layer": [
-              {{
-                "mark": {{ "type": "line", "tooltip": true }},
-                "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }}
-              }},
-              {{
-                "mark": {{ "type": "errorbar" }},
-                "encoding": {{
-                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
-                  "y2": {{ "field": "hi" }}
-                }}
-              }}
-            ]
-          }}, {{ "actions": false }});
-        }});
+    let parsed = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
 
-        vegaEmbed('#chart-wind_direction', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, direction: d.wind_direction_mean }};
-          }}) }},
-          "mark": {{ "type": "line", "tooltip": true, "point": true }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Week",
-                     "axis": {{ "labelAngle": -45 }} }},
-            "y": {{ "field": "direction", "type": "quantitative",
-                     "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
-          }}
-        }}, {{ "actions": false }});
+    // Up: triennium
+    let tri_key = triennium_for_semester(start);
 
-        vegaEmbed('#chart-rainfall', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }};
-          }}) }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Week",
-                     "axis": {{ "labelAngle": -45 }} }}
-          }},
-          "layer": [
-            {{
-              "mark": {{ "type": "bar", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }}
-            }},
-            {{
-              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }}
-            }}
-          ]
-        }}, {{ "actions": false }});
-      }})
-      .catch(function(err) {{
-        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+    // Prev / next semester
+    let prev = parsed
+        .map(|d| (d - chrono::Duration::weeks(26)).format("%Y-%m-%d").to_string())
+        .filter(|k| static_exists("semester", k));
+    let next = parsed
+        .map(|d| (d + chrono::Duration::weeks(26)).format("%Y-%m-%d").to_string())
+        .filter(|k| static_exists("semester", k));
+
+    // Month buttons
+    let months: Vec<(String, bool)> = months_in_semester(start)
+        .into_iter()
+        .map(|m| { let e = static_exists("month", &m); (m, e) })
+        .collect();
+
+    let markup = html! {
+        (maud::DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                title { "Toro — Semester " (start) }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+            }
+            body {
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { "Semester from " (start) }
+
+                    // Up: triennium
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        a."uk-button"."uk-button-default" href={ "/triennium/" (tri_key) } {
+                            "Triennium " (tri_key)
+                        }
+                    }
+
+                    // Prev / Next
+                    div."uk-margin-small-bottom" {
+                        @if let Some(ref p) = prev {
+                            a."uk-button"."uk-button-default" href={ "/semester/" (p) } {
+                                "← " (p)
+                            }
+                        }
+                        @if let Some(ref n) = next {
+                            div style="float:right" {
+                                a."uk-button"."uk-button-default" href={ "/semester/" (n) } {
+                                    (n) " →"
+                                }
+                            }
+                        }
+                    }
+                    div style="clear:both" {}
+
+                    // Month buttons
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        @for (mo, exists) in &months {
+                            @if *exists {
+                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/month/" (mo) } {
+                                    (mo)
+                                }
+                            }
+                        }
+                    }
+
+                    ul uk-tab="" {
+                        li."uk-active" { a href="#" { "Temperature" } }
+                        li { a href="#" { "Humidity" } }
+                        li { a href="#" { "Wind Speed" } }
+                        li { a href="#" { "Wind Direction" } }
+                        li { a href="#" { "Luminosity" } }
+                        li { a href="#" { "Rainfall" } }
+                    }
+                    ul."uk-switcher"."uk-margin" {
+                        li { div #chart-temperature {} }
+                        li { div #chart-humidity {} }
+                        li { div #chart-wind_speed {} }
+                        li { div #chart-wind_direction {} }
+                        li { div #chart-luminosity {} }
+                        li { div #chart-rainfall {} }
+                    }
+                }
+                script {
+                    (maud::PreEscaped(semester_chart_script(start)))
+                }
+            }
+        }
+    };
+    (Status::Ok, markup)
+}
+
+fn semester_chart_script(start: &str) -> String {
+    format!(r##"
+var errorBarMetrics = [
+  {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+  {{ field: "humidity", title: "Humidity (%)" }},
+  {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+  {{ field: "luminosity", title: "Luminosity (lux)" }}
+];
+fetch("/api/semester/{start}")
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    errorBarMetrics.forEach(function(m) {{
+      var transformed = data.map(function(d) {{
+        return {{
+          label: d.label, mean: d[m.field + "_mean"],
+          lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+          hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+        }};
       }});
-  </script>
-</body>
-</html>"##);
-    (Status::Ok, (ContentType::HTML, page))
+      vegaEmbed("#chart-" + m.field, {{
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": 700, "height": 300,
+        "data": {{ "values": transformed }},
+        "encoding": {{ "x": {{ "field": "label", "type": "ordinal", "title": "Week", "axis": {{ "labelAngle": -45 }} }} }},
+        "layer": [
+          {{ "mark": {{ "type": "line", "tooltip": true }},
+             "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }} }},
+          {{ "mark": {{ "type": "errorbar" }},
+             "encoding": {{ "y": {{ "field": "lo", "type": "quantitative", "title": m.title }}, "y2": {{ "field": "hi" }} }} }}
+        ]
+      }}, {{ "actions": false }});
+    }});
+    vegaEmbed("#chart-wind_direction", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, direction: d.wind_direction_mean }}; }}) }},
+      "mark": {{ "type": "line", "tooltip": true, "point": true }},
+      "encoding": {{
+        "x": {{ "field": "label", "type": "ordinal", "title": "Week", "axis": {{ "labelAngle": -45 }} }},
+        "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
+      }}
+    }}, {{ "actions": false }});
+    vegaEmbed("#chart-rainfall", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }}; }}) }},
+      "encoding": {{ "x": {{ "field": "label", "type": "ordinal", "title": "Week", "axis": {{ "labelAngle": -45 }} }} }},
+      "layer": [
+        {{ "mark": {{ "type": "bar", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }} }},
+        {{ "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }} }}
+      ]
+    }}, {{ "actions": false }});
+  }})
+  .catch(function(err) {{
+    document.getElementById("chart-temperature").textContent = "Error: " + err;
+  }});
+    "##)
 }
 
 #[rocket::get("/api/triennium/<start>")]
@@ -762,136 +839,197 @@ async fn api_triennium(start: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
+/// Semesters that overlap with a triennium (36 months starting from start).
+fn semesters_in_triennium(start: &str) -> Vec<String> {
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+    let start_year: i32 = start[..4].parse().unwrap();
+    let start_mo: u32 = start[5..7].parse().unwrap();
+    let total = start_mo as i32 - 1 + 36;
+    let end_year = start_year + (total - 1) / 12;
+    let end_mo = ((total - 1) % 12 + 1) as u32;
+    let end_date = NaiveDate::from_ymd_opt(end_year, end_mo, 28).unwrap(); // safe lower bound
+
+    // Iterate semester starts (every 26 weeks) that could overlap
+    // Start from the semester containing the triennium start
+    let sem_start = semester_start_of(&format!("{}T00", start));
+    let mut cursor = NaiveDate::parse_from_str(&sem_start, "%Y-%m-%d").unwrap();
+    // Go back one semester in case it overlaps
+    let one_back = cursor - chrono::Duration::weeks(26);
+    if one_back + chrono::Duration::weeks(26) > start_date {
+        cursor = one_back;
+    }
+
+    let mut semesters = vec![];
+    while cursor <= end_date {
+        let sem_end = cursor + chrono::Duration::weeks(26) - chrono::Duration::days(1);
+        // Check if this semester overlaps with the triennium
+        if sem_end >= start_date {
+            semesters.push(cursor.format("%Y-%m-%d").to_string());
+        }
+        cursor += chrono::Duration::weeks(26);
+    }
+    semesters
+}
+
 #[rocket::get("/triennium/<start>")]
 async fn triennium(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     start: &str,
-) -> (Status, (ContentType, String)) {
+) -> (Status, maud::Markup) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+        return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let page = format!(r##"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Toro — Triennium {start}</title>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
-</head>
-<body>
-  <div class="uk-container uk-margin-top">
-    <h1 class="uk-heading-small">Triennium from {start}</h1>
-    <ul uk-tab>
-      <li class="uk-active"><a href="#">Temperature</a></li>
-      <li><a href="#">Humidity</a></li>
-      <li><a href="#">Wind Speed</a></li>
-      <li><a href="#">Wind Direction</a></li>
-      <li><a href="#">Luminosity</a></li>
-      <li><a href="#">Rainfall</a></li>
-    </ul>
-    <ul class="uk-switcher uk-margin">
-      <li><div id="chart-temperature"></div></li>
-      <li><div id="chart-humidity"></div></li>
-      <li><div id="chart-wind_speed"></div></li>
-      <li><div id="chart-wind_direction"></div></li>
-      <li><div id="chart-luminosity"></div></li>
-      <li><div id="chart-rainfall"></div></li>
-    </ul>
-  </div>
-  <script>
-    var errorBarMetrics = [
-      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
-      {{ field: "humidity", title: "Humidity (%)" }},
-      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
-      {{ field: "luminosity", title: "Luminosity (lux)" }}
-    ];
 
-    fetch("/api/triennium/{start}")
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        errorBarMetrics.forEach(function(m) {{
-          var transformed = data.map(function(d) {{
-            return {{
-              label: d.label,
-              mean: d[m.field + "_mean"],
-              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
-              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
-            }};
-          }});
-          vegaEmbed('#chart-' + m.field, {{
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "width": 700, "height": 300,
-            "data": {{ "values": transformed }},
-            "encoding": {{
-              "x": {{ "field": "label", "type": "ordinal", "title": "Month",
-                       "axis": {{ "labelAngle": -45 }} }}
-            }},
-            "layer": [
-              {{
-                "mark": {{ "type": "line", "tooltip": true }},
-                "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }}
-              }},
-              {{
-                "mark": {{ "type": "errorbar" }},
-                "encoding": {{
-                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
-                  "y2": {{ "field": "hi" }}
-                }}
-              }}
-            ]
-          }}, {{ "actions": false }});
-        }});
+    let start_year: i32 = start[..4].parse().unwrap_or(0);
+    let start_mo: u32 = start[5..7].parse().unwrap_or(1);
 
-        vegaEmbed('#chart-wind_direction', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, direction: d.wind_direction_mean }};
-          }}) }},
-          "mark": {{ "type": "line", "tooltip": true, "point": true }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Month",
-                     "axis": {{ "labelAngle": -45 }} }},
-            "y": {{ "field": "direction", "type": "quantitative",
-                     "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
-          }}
-        }}, {{ "actions": false }});
+    // Sideways: ±1 year
+    let prev_total = (start_year - 1) * 12 + start_mo as i32;
+    let prev_key = format!("{}-{:02}-01", (prev_total - 1) / 12, (prev_total - 1) % 12 + 1);
+    let prev = if static_exists("triennium", &prev_key) { Some(prev_key) } else { None };
 
-        vegaEmbed('#chart-rainfall', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700, "height": 300,
-          "data": {{ "values": data.map(function(d) {{
-            return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }};
-          }}) }},
-          "encoding": {{
-            "x": {{ "field": "label", "type": "ordinal", "title": "Month",
-                     "axis": {{ "labelAngle": -45 }} }}
-          }},
-          "layer": [
-            {{
-              "mark": {{ "type": "bar", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }}
-            }},
-            {{
-              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
-              "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }}
-            }}
-          ]
-        }}, {{ "actions": false }});
-      }})
-      .catch(function(err) {{
-        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+    let next_total = (start_year + 1) * 12 + start_mo as i32;
+    let next_key = format!("{}-{:02}-01", (next_total - 1) / 12, (next_total - 1) % 12 + 1);
+    let next = if static_exists("triennium", &next_key) { Some(next_key) } else { None };
+
+    // Down: semesters
+    let semesters: Vec<(String, bool)> = semesters_in_triennium(start)
+        .into_iter()
+        .map(|s| { let e = static_exists("semester", &s); (s, e) })
+        .collect();
+
+    let markup = html! {
+        (maud::DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                title { "Toro — Triennium " (start) }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+            }
+            body {
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { "Triennium from " (start) }
+
+                    // Sideways: prev / next (±1 year)
+                    div."uk-margin-small-bottom" {
+                        @if let Some(ref p) = prev {
+                            a."uk-button"."uk-button-default" href={ "/triennium/" (p) } {
+                                "← " (p)
+                            }
+                        }
+                        @if let Some(ref n) = next {
+                            div style="float:right" {
+                                a."uk-button"."uk-button-default" href={ "/triennium/" (n) } {
+                                    (n) " →"
+                                }
+                            }
+                        }
+                    }
+                    div style="clear:both" {}
+
+                    // Down: semester buttons
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        @for (sem, exists) in &semesters {
+                            @if *exists {
+                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/semester/" (sem) } {
+                                    "Sem " (sem)
+                                }
+                            }
+                        }
+                    }
+
+                    ul uk-tab="" {
+                        li."uk-active" { a href="#" { "Temperature" } }
+                        li { a href="#" { "Humidity" } }
+                        li { a href="#" { "Wind Speed" } }
+                        li { a href="#" { "Wind Direction" } }
+                        li { a href="#" { "Luminosity" } }
+                        li { a href="#" { "Rainfall" } }
+                    }
+                    ul."uk-switcher"."uk-margin" {
+                        li { div #chart-temperature {} }
+                        li { div #chart-humidity {} }
+                        li { div #chart-wind_speed {} }
+                        li { div #chart-wind_direction {} }
+                        li { div #chart-luminosity {} }
+                        li { div #chart-rainfall {} }
+                    }
+                }
+                script {
+                    (maud::PreEscaped(triennium_chart_script(start)))
+                }
+            }
+        }
+    };
+    (Status::Ok, markup)
+}
+
+fn triennium_chart_script(start: &str) -> String {
+    format!(r##"
+var errorBarMetrics = [
+  {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+  {{ field: "humidity", title: "Humidity (%)" }},
+  {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+  {{ field: "luminosity", title: "Luminosity (lux)" }}
+];
+fetch("/api/triennium/{start}")
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    errorBarMetrics.forEach(function(m) {{
+      var transformed = data.map(function(d) {{
+        return {{
+          label: d.label, mean: d[m.field + "_mean"],
+          lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+          hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+        }};
       }});
-  </script>
-</body>
-</html>"##);
-    (Status::Ok, (ContentType::HTML, page))
+      vegaEmbed("#chart-" + m.field, {{
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": 700, "height": 300,
+        "data": {{ "values": transformed }},
+        "encoding": {{ "x": {{ "field": "label", "type": "ordinal", "title": "Month", "axis": {{ "labelAngle": -45 }} }} }},
+        "layer": [
+          {{ "mark": {{ "type": "line", "tooltip": true }},
+             "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }} }},
+          {{ "mark": {{ "type": "errorbar" }},
+             "encoding": {{ "y": {{ "field": "lo", "type": "quantitative", "title": m.title }}, "y2": {{ "field": "hi" }} }} }}
+        ]
+      }}, {{ "actions": false }});
+    }});
+    vegaEmbed("#chart-wind_direction", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, direction: d.wind_direction_mean }}; }}) }},
+      "mark": {{ "type": "line", "tooltip": true, "point": true }},
+      "encoding": {{
+        "x": {{ "field": "label", "type": "ordinal", "title": "Month", "axis": {{ "labelAngle": -45 }} }},
+        "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
+      }}
+    }}, {{ "actions": false }});
+    vegaEmbed("#chart-rainfall", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }}; }}) }},
+      "encoding": {{ "x": {{ "field": "label", "type": "ordinal", "title": "Month", "axis": {{ "labelAngle": -45 }} }} }},
+      "layer": [
+        {{ "mark": {{ "type": "bar", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }} }},
+        {{ "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }} }}
+      ]
+    }}, {{ "actions": false }});
+  }})
+  .catch(function(err) {{
+    document.getElementById("chart-temperature").textContent = "Error: " + err;
+  }});
+    "##)
 }
 
 #[rocket::main]

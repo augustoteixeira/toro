@@ -680,43 +680,59 @@ pub async fn generate_triennium_json(
     Ok(())
 }
 
+/// Returns all triennium starts that overlap with the data.
+/// Triennia are spaced 12 months apart (overlapping by 2 years).
 pub async fn get_all_triennia(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
-    let dates: Vec<String> = get_all_dates(pool).await?;
-    if dates.is_empty() {
+    let months: Vec<String> = get_all_months(pool).await?;
+    if months.is_empty() {
         return Ok(vec![]);
     }
-    let first = NaiveDate::parse_from_str(&dates[0], "%Y-%m-%d").unwrap();
-    let last = NaiveDate::parse_from_str(dates.last().unwrap(), "%Y-%m-%d").unwrap();
+    let first_year: i32 = months[0][..4].parse().unwrap();
+    let first_mo: u32 = months[0][5..7].parse().unwrap();
+    let last_year: i32 = months.last().unwrap()[..4].parse().unwrap();
+    let last_mo: u32 = months.last().unwrap()[5..7].parse().unwrap();
 
+    // A triennium starting at (y, m) covers months [y-m .. y+3-m).
+    // We need all starts whose 36-month window overlaps with our data range.
+    // Earliest possible start: last_month - 35 months (its window just reaches the last data).
+    // Latest possible start: last_month (starting there gives at least 1 month of data).
+    let earliest_total = (last_year * 12 + last_mo as i32) - 35;
+    let latest_total = last_year * 12 + last_mo as i32;
+
+    // But we only want starts that actually overlap with data, step by 12 months
+    // Start from the earliest, step by 12 months
     let mut triennia = vec![];
-    let mut year = first.year();
-    let mut mo = first.month();
-    // Snap to first of month
-    loop {
-        let start = NaiveDate::from_ymd_opt(year, mo, 1).unwrap();
-        triennia.push(start.format("%Y-%m-%d").to_string());
-        // Advance 36 months
-        let total = mo as i32 - 1 + TRIENNIUM_MONTHS as i32;
-        year += total / 12;
-        mo = (total % 12 + 1) as u32;
-        if NaiveDate::from_ymd_opt(year, mo, 1).unwrap() > last {
-            break;
-        }
+    let mut total = earliest_total;
+    while total <= latest_total {
+        let y = (total - 1) / 12;
+        let m = ((total - 1) % 12 + 1) as u32;
+        triennia.push(format!("{}-{:02}-01", y, m));
+        total += 12;
     }
     Ok(triennia)
 }
 
-/// Given a reading's hour string, return the triennium start ("YYYY-MM-01") it belongs to.
-pub fn triennium_start_of(hour: &str) -> String {
+/// Returns all triennium start dates ("YYYY-MM-01") whose 36-month window
+/// contains the given reading's month. Up to 3 results.
+pub fn triennia_containing(hour: &str) -> Vec<String> {
     let year: i32 = hour[..4].parse().expect("invalid year");
     let mo: u32 = hour[5..7].parse().expect("invalid month");
-    // Months since epoch start (1970-01)
-    let months_since_epoch = (year - 1970) * 12 + mo as i32 - 1;
-    let tri_index = months_since_epoch.div_euclid(TRIENNIUM_MONTHS as i32);
-    let start_months = tri_index * TRIENNIUM_MONTHS as i32;
-    let start_year = 1970 + start_months / 12;
-    let start_mo = (start_months % 12 + 1) as u32;
-    format!("{}-{:02}-01", start_year, start_mo)
+    // A triennium starting at (sy, sm) contains month (year, mo) if
+    // 0 <= (year*12+mo) - (sy*12+sm) < 36
+    let target = year * 12 + mo as i32;
+    let mut results = vec![];
+    for offset in 0..3 {
+        let start_total = target - offset * 12;
+        // Check that the triennium starting here actually contains target
+        // start_total .. start_total + 36 must contain target
+        if start_total > 0 && target < start_total + TRIENNIUM_MONTHS as i32 {
+            let sy = (start_total - 1) / 12;
+            let sm = ((start_total - 1) % 12 + 1) as u32;
+            results.push(format!("{}-{:02}-01", sy, sm));
+        }
+    }
+    results.sort();
+    results
 }
 
 pub struct TokenAuthenticated;
