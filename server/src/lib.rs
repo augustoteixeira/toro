@@ -471,16 +471,21 @@ pub fn month_of(hour: &str) -> String {
 
 const SEMESTER_WEEKS: usize = 26;
 
-/// Semester key format: "YYYY-MM-01" (first of a month).
-/// A semester spans 26 weeks from that date, bucketed by week.
+/// Semester key format: "YYYY-MM".
+/// A semester spans 26 weeks from the 1st of that month, bucketed by week.
+
+fn sem_key_to_date(key: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(&format!("{}-01", key), "%Y-%m-%d")
+        .expect("invalid semester key")
+}
 
 pub async fn get_readings_for_semester(
     pool: &sqlx::SqlitePool,
-    start: &str,  // "YYYY-MM-01"
+    key: &str,  // "YYYY-MM"
 ) -> Result<Vec<Reading>, sqlx::Error> {
-    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").expect("invalid semester start");
+    let start_date = sem_key_to_date(key);
     let end_date = start_date + chrono::Duration::weeks(SEMESTER_WEEKS as i64) - chrono::Duration::days(1);
-    let start_str = format!("{}T00", start);
+    let start_str = format!("{}-01T00", key);
     let end_str = format!("{}T23", end_date.format("%Y-%m-%d"));
     sqlx::query_as::<_, Reading>(
         "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
@@ -492,8 +497,8 @@ pub async fn get_readings_for_semester(
     .await
 }
 
-pub fn aggregate_semester(start: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
-    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").expect("invalid semester start");
+pub fn aggregate_semester(key: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    let start_date = sem_key_to_date(key);
 
     let mut buckets: Vec<BucketCollector> =
         (0..SEMESTER_WEEKS).map(|_| BucketCollector::new()).collect();
@@ -526,12 +531,12 @@ pub fn aggregate_semester(start: &str, readings: &[Reading]) -> Vec<AggregatedBu
         .collect()
 }
 
-pub async fn generate_semester_json(pool: &sqlx::SqlitePool, start: &str) -> Result<(), String> {
-    let readings = get_readings_for_semester(pool, start)
+pub async fn generate_semester_json(pool: &sqlx::SqlitePool, key: &str) -> Result<(), String> {
+    let readings = get_readings_for_semester(pool, key)
         .await
         .map_err(|e| e.to_string())?;
 
-    let buckets = aggregate_semester(start, &readings);
+    let buckets = aggregate_semester(key, &readings);
 
     let json = rocket::serde::json::serde_json::to_string(&buckets)
         .map_err(|e| e.to_string())?;
@@ -539,20 +544,18 @@ pub async fn generate_semester_json(pool: &sqlx::SqlitePool, start: &str) -> Res
     std::fs::create_dir_all("data/static/semester")
         .map_err(|e| e.to_string())?;
 
-    std::fs::write(format!("data/static/semester/{}.json", start), json)
+    std::fs::write(format!("data/static/semester/{}.json", key), json)
         .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-/// Returns all semester starts (one per month) that overlap with the data.
+/// Returns all semester keys (one per month, "YYYY-MM") that overlap with the data.
 pub async fn get_all_semesters(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     let months: Vec<String> = get_all_months(pool).await?;
     if months.is_empty() {
         return Ok(vec![]);
     }
-    // One semester per month start, from first to last data month.
-    // Each spans 26 weeks from its start date.
     let first_year: i32 = months[0][..4].parse().unwrap();
     let first_mo: u32 = months[0][5..7].parse().unwrap();
     let last_year: i32 = months.last().unwrap()[..4].parse().unwrap();
@@ -566,75 +569,54 @@ pub async fn get_all_semesters(pool: &sqlx::SqlitePool) -> Result<Vec<String>, s
     while total <= latest_total {
         let y = (total - 1) / 12;
         let m = ((total - 1) % 12 + 1) as u32;
-        semesters.push(format!("{}-{:02}-01", y, m));
+        semesters.push(format!("{}-{:02}", y, m));
         total += 1;
     }
     Ok(semesters)
 }
 
-/// All semester starts ("YYYY-MM-01") whose 26-week window contains the given reading.
-/// A reading in month M is contained in semesters starting from M-5 to M (6 months back).
+/// All semester keys ("YYYY-MM") whose 26-week window contains the given reading.
 pub fn semesters_containing(hour: &str) -> Vec<String> {
     let year: i32 = hour[..4].parse().expect("invalid year");
     let mo: u32 = hour[5..7].parse().expect("invalid month");
     let target_total = year * 12 + mo as i32;
 
-    // A semester starting at total T covers approximately T to T+6 months (26 weeks ≈ 6 months)
-    // So semesters that contain this month start from target_total-5 to target_total
     let mut results = vec![];
     for offset in 0..=5i32 {
         let start_total = target_total - offset;
         if start_total > 0 {
             let sy = (start_total - 1) / 12;
             let sm = ((start_total - 1) % 12 + 1) as u32;
-            results.push(format!("{}-{:02}-01", sy, sm));
+            results.push(format!("{}-{:02}", sy, sm));
         }
     }
     results.sort();
     results
 }
 
-/// Given a reading's hour, return the semester for which that month is the 3rd month.
-/// i.e. semester starting 2 months before the reading's month.
+/// Given a reading's hour, return the semester key for which that month is the 3rd month.
 pub fn semester_start_of(hour: &str) -> String {
     let year: i32 = hour[..4].parse().expect("invalid year");
     let mo: u32 = hour[5..7].parse().expect("invalid month");
-    let total = year * 12 + mo as i32 - 2; // 2 months back
+    let total = year * 12 + mo as i32 - 2;
     let sy = (total - 1) / 12;
     let sm = ((total - 1) % 12 + 1) as u32;
-    format!("{}-{:02}-01", sy, sm)
+    format!("{}-{:02}", sy, sm)
 }
 
 const TRIENNIUM_MONTHS: usize = 36;
 
+/// Triennium key format: "YYYY" (start year).
+/// A triennium spans 36 months (3 years) from Jan 1 of that year.
+/// Triennia overlap by 2 years, one per year.
+
 pub async fn get_readings_for_triennium(
     pool: &sqlx::SqlitePool,
-    start: &str,
+    year_key: &str,  // "YYYY"
 ) -> Result<Vec<Reading>, sqlx::Error> {
-    // start is "YYYY-MM-01"
-    let start_year: i32 = start[..4].parse().expect("invalid year");
-    let start_mo: u32 = start[5..7].parse().expect("invalid month");
-    // Compute end: start + 36 months - 1 day
-    let total_months = start_mo as i32 - 1 + TRIENNIUM_MONTHS as i32;
-    let end_year = start_year + total_months / 12;
-    let end_mo = (total_months % 12 + 1) as u32;
-    // Last day of the month before end
-    let end_date = NaiveDate::from_ymd_opt(
-        if end_mo == 1 { end_year - 1 } else { end_year },
-        if end_mo == 1 { 12 } else { end_mo - 1 },
-        1,
-    )
-    .unwrap();
-    let days_in_end_month = NaiveDate::from_ymd_opt(end_year, end_mo, 1)
-        .unwrap()
-        .signed_duration_since(end_date)
-        .num_days() as u32;
-    let end_day = days_in_end_month;
-    let end_str = format!(
-        "{}-{:02}-{:02}T23",
-        end_date.year(), end_date.month(), end_day
-    );
-    let start_str = format!("{}T00", start);
+    let year: i32 = year_key.parse().expect("invalid triennium year");
+    let start_str = format!("{}-01-01T00", year);
+    let end_str = format!("{}-12-31T23", year + 2);
     sqlx::query_as::<_, Reading>(
         "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
          FROM hourly_readings WHERE hour >= ? AND hour <= ? ORDER BY hour",
@@ -645,9 +627,8 @@ pub async fn get_readings_for_triennium(
     .await
 }
 
-pub fn aggregate_triennium(start: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
-    let start_year: i32 = start[..4].parse().expect("invalid year");
-    let start_mo: u32 = start[5..7].parse().expect("invalid month");
+pub fn aggregate_triennium(year_key: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    let start_year: i32 = year_key.parse().expect("invalid triennium year");
 
     let mut buckets: Vec<BucketCollector> =
         (0..TRIENNIUM_MONTHS).map(|_| BucketCollector::new()).collect();
@@ -655,7 +636,7 @@ pub fn aggregate_triennium(start: &str, readings: &[Reading]) -> Vec<AggregatedB
     for r in readings {
         let year: i32 = r.hour[..4].parse().unwrap();
         let mo: u32 = r.hour[5..7].parse().unwrap();
-        let month_offset = (year - start_year) * 12 + mo as i32 - start_mo as i32;
+        let month_offset = (year - start_year) * 12 + mo as i32 - 1;
         if month_offset >= 0 && (month_offset as usize) < TRIENNIUM_MONTHS {
             let b = &mut buckets[month_offset as usize];
             if let Some(v) = r.temperature { b.temperature.push(v); }
@@ -672,9 +653,8 @@ pub fn aggregate_triennium(start: &str, readings: &[Reading]) -> Vec<AggregatedB
 
     (0..TRIENNIUM_MONTHS)
         .map(|i| {
-            let total_mo = start_mo as i32 - 1 + i as i32;
-            let year = start_year + total_mo / 12;
-            let mo = (total_mo % 12 + 1) as u32;
+            let year = start_year + i as i32 / 12;
+            let mo = (i % 12 + 1) as u32;
             let label = format!("{}-{:02}", year, mo);
             collector_to_bucket(label, &buckets[i])
         })
@@ -683,13 +663,13 @@ pub fn aggregate_triennium(start: &str, readings: &[Reading]) -> Vec<AggregatedB
 
 pub async fn generate_triennium_json(
     pool: &sqlx::SqlitePool,
-    start: &str,
+    year_key: &str,
 ) -> Result<(), String> {
-    let readings = get_readings_for_triennium(pool, start)
+    let readings = get_readings_for_triennium(pool, year_key)
         .await
         .map_err(|e| e.to_string())?;
 
-    let buckets = aggregate_triennium(start, &readings);
+    let buckets = aggregate_triennium(year_key, &readings);
 
     let json = rocket::serde::json::serde_json::to_string(&buckets)
         .map_err(|e| e.to_string())?;
@@ -697,65 +677,40 @@ pub async fn generate_triennium_json(
     std::fs::create_dir_all("data/static/triennium")
         .map_err(|e| e.to_string())?;
 
-    std::fs::write(format!("data/static/triennium/{}.json", start), json)
+    std::fs::write(format!("data/static/triennium/{}.json", year_key), json)
         .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-/// Returns all triennium starts that overlap with the data.
-/// Triennia are spaced 12 months apart (overlapping by 2 years).
+/// Returns all triennium year keys ("YYYY") that overlap with the data.
+/// One triennium per year, each spanning 3 years from Jan 1.
 pub async fn get_all_triennia(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
     let months: Vec<String> = get_all_months(pool).await?;
     if months.is_empty() {
         return Ok(vec![]);
     }
     let first_year: i32 = months[0][..4].parse().unwrap();
-    let first_mo: u32 = months[0][5..7].parse().unwrap();
     let last_year: i32 = months.last().unwrap()[..4].parse().unwrap();
-    let last_mo: u32 = months.last().unwrap()[5..7].parse().unwrap();
 
-    // A triennium starting at (y, m) covers months [y-m .. y+3-m).
-    // We need all starts whose 36-month window overlaps with our data range.
-    // Earliest possible start: last_month - 35 months (its window just reaches the last data).
-    // Latest possible start: last_month (starting there gives at least 1 month of data).
-    let earliest_total = (last_year * 12 + last_mo as i32) - 35;
-    let latest_total = last_year * 12 + last_mo as i32;
-
-    // But we only want starts that actually overlap with data, step by 12 months
-    // Start from the earliest, step by 12 months
+    // A triennium starting at year Y covers Y, Y+1, Y+2.
+    // It overlaps with data if Y <= last_year and Y+2 >= first_year.
     let mut triennia = vec![];
-    let mut total = earliest_total;
-    while total <= latest_total {
-        let y = (total - 1) / 12;
-        let m = ((total - 1) % 12 + 1) as u32;
-        triennia.push(format!("{}-{:02}-01", y, m));
-        total += 12;
+    let mut y = first_year - 2; // earliest possible start that still reaches first_year
+    while y <= last_year {
+        if y + 2 >= first_year {
+            triennia.push(y.to_string());
+        }
+        y += 1;
     }
     Ok(triennia)
 }
 
-/// Returns all triennium start dates ("YYYY-MM-01") whose 36-month window
-/// contains the given reading's month. Up to 3 results.
+/// Returns all triennium year keys ("YYYY") whose 3-year window contains the given reading.
 pub fn triennia_containing(hour: &str) -> Vec<String> {
     let year: i32 = hour[..4].parse().expect("invalid year");
-    let mo: u32 = hour[5..7].parse().expect("invalid month");
-    // A triennium starting at (sy, sm) contains month (year, mo) if
-    // 0 <= (year*12+mo) - (sy*12+sm) < 36
-    let target = year * 12 + mo as i32;
-    let mut results = vec![];
-    for offset in 0..3 {
-        let start_total = target - offset * 12;
-        // Check that the triennium starting here actually contains target
-        // start_total .. start_total + 36 must contain target
-        if start_total > 0 && target < start_total + TRIENNIUM_MONTHS as i32 {
-            let sy = (start_total - 1) / 12;
-            let sm = ((start_total - 1) % 12 + 1) as u32;
-            results.push(format!("{}-{:02}-01", sy, sm));
-        }
-    }
-    results.sort();
-    results
+    // Triennia starting at year-2, year-1, year all contain this year
+    (0..3).map(|offset| (year - offset).to_string()).collect()
 }
 
 pub struct TokenAuthenticated;

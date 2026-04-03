@@ -256,42 +256,43 @@ async fn generate_week_json_writes_valid_file() {
 
 #[test]
 fn aggregate_triennium_produces_36_buckets() {
-    let buckets = aggregate_triennium("2023-06-01", &[]);
+    // Key "2023" covers Jan 2023 through Dec 2025
+    let buckets = aggregate_triennium("2023", &[]);
     assert_eq!(buckets.len(), 36);
 }
 
 #[test]
 fn aggregate_triennium_labels_are_year_months() {
-    let buckets = aggregate_triennium("2023-06-01", &[]);
-    assert_eq!(buckets[0].label, "2023-06");
-    assert_eq!(buckets[1].label, "2023-07");
-    assert_eq!(buckets[6].label, "2023-12");
-    assert_eq!(buckets[7].label, "2024-01");
-    assert_eq!(buckets[35].label, "2026-05");
+    let buckets = aggregate_triennium("2023", &[]);
+    assert_eq!(buckets[0].label, "2023-01");
+    assert_eq!(buckets[1].label, "2023-02");
+    assert_eq!(buckets[11].label, "2023-12");
+    assert_eq!(buckets[12].label, "2024-01");
+    assert_eq!(buckets[35].label, "2025-12");
 }
 
 #[test]
 fn aggregate_triennium_buckets_readings_by_month() {
     let readings = vec![
-        reading("2023-06-10T08", 20.0),
-        reading("2023-06-20T14", 22.0),  // same month (index 0)
-        reading("2024-01-15T10", 30.0),  // index 7
+        reading("2023-01-10T08", 20.0),
+        reading("2023-01-20T14", 22.0),  // same month (index 0)
+        reading("2024-02-15T10", 30.0),  // index 13
     ];
-    let buckets = aggregate_triennium("2023-06-01", &readings);
+    let buckets = aggregate_triennium("2023", &readings);
 
     assert_eq!(buckets[0].temperature_mean, Some(21.0));
-    assert_eq!(buckets[7].temperature_mean, Some(30.0));
+    assert_eq!(buckets[13].temperature_mean, Some(30.0));
     assert!(buckets[1].temperature_mean.is_none());
 }
 
 #[test]
 fn aggregate_triennium_ignores_readings_outside_range() {
     let readings = vec![
-        reading("2023-05-31T10", 99.0),  // month before start
-        reading("2023-06-01T10", 25.0),  // first month (in range)
-        reading("2026-06-01T10", 99.0),  // after 36 months
+        reading("2022-12-31T10", 99.0),  // year before start
+        reading("2023-01-01T10", 25.0),  // first month (in range)
+        reading("2026-01-01T10", 99.0),  // after 3 years
     ];
-    let buckets = aggregate_triennium("2023-06-01", &readings);
+    let buckets = aggregate_triennium("2023", &readings);
 
     assert_eq!(buckets[0].temperature_mean, Some(25.0));
     for i in 1..36 {
@@ -304,14 +305,14 @@ async fn generate_triennium_json_writes_valid_file() {
     let pool = common::test_pool().await;
     server::migrate(&pool).await.expect("migration failed");
 
-    insert_reading(&pool, &reading("2023-06-10T10", 25.0)).await.unwrap();
+    insert_reading(&pool, &reading("2023-03-10T10", 25.0)).await.unwrap();
     insert_reading(&pool, &reading("2025-01-15T14", 32.0)).await.unwrap();
 
-    generate_triennium_json(&pool, "2023-06-01").await.expect("generate failed");
+    generate_triennium_json(&pool, "2023").await.expect("generate failed");
 
-    let path = "data/static/triennium/2023-06-01.json";
+    let path = "data/static/triennium/2023.json";
     let contents = std::fs::read_to_string(path).expect("file not found");
-    assert!(contents.contains("2023-06"));
+    assert!(contents.contains("2023-03"));
     assert!(contents.contains("2025-01"));
     assert!(contents.contains("25.0"));
     assert!(contents.contains("32.0"));
@@ -321,22 +322,23 @@ async fn generate_triennium_json_writes_valid_file() {
 
 
 #[test]
-fn aggregate_semester_labels_are_week_mondays() {
-    let buckets = aggregate_semester("2025-01-06", &[]);
-    assert_eq!(buckets[0].label, "2025-01-06");
-    assert_eq!(buckets[1].label, "2025-01-13");
-    assert_eq!(buckets[25].label, "2025-06-30");
+fn aggregate_semester_labels_are_week_starts() {
+    // Semester key "2025-01" starts on 2025-01-01
+    let buckets = aggregate_semester("2025-01", &[]);
+    assert_eq!(buckets[0].label, "2025-01-01");
+    assert_eq!(buckets[1].label, "2025-01-08");
+    assert_eq!(buckets[25].label, "2025-06-25");
 }
 
 #[test]
 fn aggregate_semester_buckets_readings_by_week() {
-    // 2025-01-06 is Monday of week 0; 2025-01-20 is Monday of week 2
+    // Semester starts 2025-01-01; week 0 = Jan 1-7, week 2 = Jan 15-21
     let readings = vec![
-        reading("2025-01-06T10", 20.0),
-        reading("2025-01-07T14", 22.0),  // same week (week 0)
-        reading("2025-01-20T10", 30.0),  // week 2
+        reading("2025-01-01T10", 20.0),
+        reading("2025-01-03T14", 22.0),  // same week (week 0)
+        reading("2025-01-15T10", 30.0),  // week 2
     ];
-    let buckets = aggregate_semester("2025-01-06", &readings);
+    let buckets = aggregate_semester("2025-01", &readings);
 
     assert_eq!(buckets[0].temperature_mean, Some(21.0));  // (20+22)/2
     assert_eq!(buckets[2].temperature_mean, Some(30.0));
@@ -346,11 +348,11 @@ fn aggregate_semester_buckets_readings_by_week() {
 #[test]
 fn aggregate_semester_ignores_readings_outside_range() {
     let readings = vec![
-        reading("2025-01-05T10", 99.0),  // Sunday before semester
-        reading("2025-01-06T10", 25.0),  // week 0 (in range)
+        reading("2024-12-31T10", 99.0),  // day before semester start
+        reading("2025-01-01T10", 25.0),  // week 0 (in range)
         reading("2025-07-14T10", 99.0),  // after 26 weeks (out of range)
     ];
-    let buckets = aggregate_semester("2025-01-06", &readings);
+    let buckets = aggregate_semester("2025-01", &readings);
 
     assert_eq!(buckets[0].temperature_mean, Some(25.0));
     for i in 1..26 {
@@ -363,15 +365,14 @@ async fn generate_semester_json_writes_valid_file() {
     let pool = common::test_pool().await;
     server::migrate(&pool).await.expect("migration failed");
 
-    insert_reading(&pool, &reading("2025-01-06T10", 25.0)).await.unwrap();
+    insert_reading(&pool, &reading("2025-01-05T10", 25.0)).await.unwrap();
     insert_reading(&pool, &reading("2025-03-10T14", 32.0)).await.unwrap();
 
-    generate_semester_json(&pool, "2025-01-06").await.expect("generate failed");
+    generate_semester_json(&pool, "2025-01").await.expect("generate failed");
 
-    let path = "data/static/semester/2025-01-06.json";
+    let path = "data/static/semester/2025-01.json";
     let contents = std::fs::read_to_string(path).expect("file not found");
-    assert!(contents.contains("2025-01-06"));
-    assert!(contents.contains("2025-03-10"));
+    assert!(contents.contains("2025-01-01"));  // first week label
     assert!(contents.contains("25.0"));
     assert!(contents.contains("32.0"));
 

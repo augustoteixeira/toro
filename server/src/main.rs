@@ -627,9 +627,9 @@ async fn api_semester(start: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
-/// Months that a semester (26 weeks starting at monday) touches.
-fn months_in_semester(start_monday: &str) -> Vec<String> {
-    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d").unwrap();
+/// Months that a semester (26 weeks from the 1st of the given month) touches.
+fn months_in_semester(start: &str) -> Vec<String> {
+    let start = NaiveDate::parse_from_str(&format!("{}-01", start), "%Y-%m-%d").unwrap();
     let end = start + chrono::Duration::weeks(26) - chrono::Duration::days(1);
     let mut months = vec![];
     let mut cursor_y = start.year();
@@ -644,30 +644,24 @@ fn months_in_semester(start_monday: &str) -> Vec<String> {
     months
 }
 
-/// The triennium whose middle year contains the given semester.
-/// Semester key is "YYYY-MM-01". Midpoint is 13 weeks in.
-/// Middle year of a triennium starting YYYY-MM-01 is YYYY+1.
+/// The triennium whose middle year contains the given semester's midpoint.
+/// Triennium key is "YYYY". Middle year of triennium Y is Y+1.
 fn triennium_for_semester(start: &str) -> String {
-    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+    // Semester key is "YYYY-MM", start date is 1st of that month
+    let start_date = NaiveDate::parse_from_str(&format!("{}-01", start), "%Y-%m-%d").unwrap();
     let midpoint = start_date + chrono::Duration::weeks(13);
-    let mid_hour = format!("{}-{:02}-15T00", midpoint.year(), midpoint.month());
-    let candidates = triennia_containing(&mid_hour);
-    for c in &candidates {
-        let tri_year: i32 = c[..4].parse().unwrap();
-        if tri_year + 1 == midpoint.year() {
-            return c.clone();
-        }
-    }
-    candidates.into_iter().next().unwrap_or_default()
+    // The triennium whose middle year (Y+1) == midpoint.year() => Y = midpoint.year() - 1
+    let tri_year = midpoint.year() - 1;
+    tri_year.to_string()
 }
 
-fn shift_month(ym01: &str, delta: i32) -> String {
-    let year: i32 = ym01[..4].parse().unwrap();
-    let mo: u32 = ym01[5..7].parse().unwrap();
+fn shift_month(ym: &str, delta: i32) -> String {
+    let year: i32 = ym[..4].parse().unwrap();
+    let mo: u32 = ym[5..7].parse().unwrap();
     let total = year * 12 + mo as i32 + delta;
     let ny = (total - 1) / 12;
     let nm = ((total - 1) % 12 + 1) as u32;
-    format!("{}-{:02}-01", ny, nm)
+    format!("{}-{:02}", ny, nm)
 }
 
 #[rocket::get("/semester/<start>")]
@@ -847,25 +841,23 @@ async fn api_triennium(start: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
-/// Semester starts ("YYYY-MM-01") whose 26-week window overlaps with the triennium.
-/// Triennium spans 36 months from start. A semester overlaps if it starts within
-/// the triennium window or its window reaches back into it (up to 5 months before end).
-fn semesters_in_triennium(tri_start: &str) -> Vec<String> {
-    let tri_year: i32 = tri_start[..4].parse().unwrap();
-    let tri_mo: u32 = tri_start[5..7].parse().unwrap();
-    let tri_start_total = tri_year * 12 + tri_mo as i32;
-    let tri_end_total = tri_start_total + 35; // last month of triennium
+/// Semester keys ("YYYY-MM") whose 26-week window overlaps with the triennium year range.
+/// Triennium year key "YYYY" covers Jan YYYY through Dec YYYY+2.
+fn semesters_in_triennium(year_key: &str) -> Vec<String> {
+    let tri_year: i32 = year_key.parse().unwrap();
+    // Triennium covers months tri_year*12+1 through (tri_year+3)*12
+    let tri_start_total = tri_year * 12 + 1;
+    let tri_end_total = (tri_year + 3) * 12;
 
-    // A semester starting at total T covers T to T+5 (approx 26 weeks ≈ 6 months)
-    // It overlaps if T <= tri_end_total and T+5 >= tri_start_total
-    // => T >= tri_start_total - 5 and T <= tri_end_total
+    // A semester starting at month total T covers T to T+5 (approx 26 weeks ≈ 6 months).
+    // It overlaps if T+5 >= tri_start_total and T <= tri_end_total.
     let mut semesters = vec![];
     let mut total = tri_start_total - 5;
     while total <= tri_end_total {
         if total > 0 {
             let sy = (total - 1) / 12;
             let sm = ((total - 1) % 12 + 1) as u32;
-            semesters.push(format!("{}-{:02}-01", sy, sm));
+            semesters.push(format!("{}-{:02}", sy, sm));
         }
         total += 1;
     }
@@ -882,16 +874,12 @@ async fn triennium(
         return (Status::TooManyRequests, html! { "Too many requests" });
     }
 
-    let start_year: i32 = start[..4].parse().unwrap_or(0);
-    let start_mo: u32 = start[5..7].parse().unwrap_or(1);
+    let year: i32 = start.parse().unwrap_or(0);
 
     // Sideways: ±1 year
-    let prev_total = (start_year - 1) * 12 + start_mo as i32;
-    let prev_key = format!("{}-{:02}-01", (prev_total - 1) / 12, (prev_total - 1) % 12 + 1);
+    let prev_key = (year - 1).to_string();
     let prev = if static_exists("triennium", &prev_key) { Some(prev_key) } else { None };
-
-    let next_total = (start_year + 1) * 12 + start_mo as i32;
-    let next_key = format!("{}-{:02}-01", (next_total - 1) / 12, (next_total - 1) % 12 + 1);
+    let next_key = (year + 1).to_string();
     let next = if static_exists("triennium", &next_key) { Some(next_key) } else { None };
 
     // Down: semesters
