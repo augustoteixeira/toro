@@ -117,11 +117,10 @@ pub struct WeekBucket {
     pub wind_speed_mean: Option<f64>,
     pub wind_speed_std: Option<f64>,
     pub wind_direction_mean: Option<f64>,
-    pub wind_direction_std: Option<f64>,
     pub luminosity_mean: Option<f64>,
     pub luminosity_std: Option<f64>,
-    pub rainfall_mean: Option<f64>,
-    pub rainfall_std: Option<f64>,
+    pub rainfall_sum: Option<f64>,
+    pub rainfall_max: Option<f64>,
 }
 
 fn mean_and_std(values: &[f64]) -> Option<(f64, f64)> {
@@ -132,6 +131,36 @@ fn mean_and_std(values: &[f64]) -> Option<(f64, f64)> {
     let mean = values.iter().sum::<f64>() / n;
     let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
     Some((round2(mean), round2(variance.sqrt())))
+}
+
+/// Average wind direction using vector decomposition.
+/// Each (speed, direction) pair is converted to Cartesian, averaged, then
+/// converted back to an angle in degrees.
+fn vector_mean_direction(speeds: &[f64], directions: &[f64]) -> Option<f64> {
+    if speeds.is_empty() || speeds.len() != directions.len() {
+        return None;
+    }
+    let mut sum_x = 0.0;
+    let mut sum_y = 0.0;
+    for (s, d) in speeds.iter().zip(directions.iter()) {
+        let rad = d.to_radians();
+        sum_x += s * rad.cos();
+        sum_y += s * rad.sin();
+    }
+    let n = speeds.len() as f64;
+    let avg_x = sum_x / n;
+    let avg_y = sum_y / n;
+    let angle = avg_y.atan2(avg_x).to_degrees();
+    Some(round2(if angle < 0.0 { angle + 360.0 } else { angle }))
+}
+
+fn sum_and_max(values: &[f64]) -> Option<(f64, f64)> {
+    if values.is_empty() {
+        return None;
+    }
+    let sum = values.iter().sum::<f64>();
+    let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    Some((round2(sum), round2(max)))
 }
 
 fn round2(v: f64) -> f64 {
@@ -156,23 +185,49 @@ fn bucket_index(monday: &NaiveDate, hour_str: &str) -> Option<usize> {
     Some(day_offset as usize * 4 + quarter)
 }
 
+struct BucketCollector {
+    temperature: Vec<f64>,
+    humidity: Vec<f64>,
+    wind_speed: Vec<f64>,
+    wind_direction: Vec<f64>,
+    /// Wind speed values paired with wind_direction (only when both are present)
+    wind_speed_for_dir: Vec<f64>,
+    luminosity: Vec<f64>,
+    rainfall: Vec<f64>,
+}
+
+impl BucketCollector {
+    fn new() -> Self {
+        Self {
+            temperature: vec![],
+            humidity: vec![],
+            wind_speed: vec![],
+            wind_direction: vec![],
+            wind_speed_for_dir: vec![],
+            luminosity: vec![],
+            rainfall: vec![],
+        }
+    }
+}
+
 pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
     let monday_date = NaiveDate::parse_from_str(monday, "%Y-%m-%d")
         .expect("invalid monday date");
 
-    // Collect values per bucket per metric
-    let mut buckets: Vec<[Vec<f64>; 6]> = (0..28)
-        .map(|_| [vec![], vec![], vec![], vec![], vec![], vec![]])
-        .collect();
+    let mut buckets: Vec<BucketCollector> = (0..28).map(|_| BucketCollector::new()).collect();
 
     for r in readings {
         if let Some(idx) = bucket_index(&monday_date, &r.hour) {
-            if let Some(v) = r.temperature { buckets[idx][0].push(v); }
-            if let Some(v) = r.humidity { buckets[idx][1].push(v); }
-            if let Some(v) = r.wind_speed { buckets[idx][2].push(v); }
-            if let Some(v) = r.wind_direction { buckets[idx][3].push(v); }
-            if let Some(v) = r.luminosity { buckets[idx][4].push(v); }
-            if let Some(v) = r.rainfall { buckets[idx][5].push(v); }
+            let b = &mut buckets[idx];
+            if let Some(v) = r.temperature { b.temperature.push(v); }
+            if let Some(v) = r.humidity { b.humidity.push(v); }
+            if let Some(v) = r.wind_speed { b.wind_speed.push(v); }
+            if let (Some(s), Some(d)) = (r.wind_speed, r.wind_direction) {
+                b.wind_speed_for_dir.push(s);
+                b.wind_direction.push(d);
+            }
+            if let Some(v) = r.luminosity { b.luminosity.push(v); }
+            if let Some(v) = r.rainfall { b.rainfall.push(v); }
         }
     }
 
@@ -182,12 +237,13 @@ pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
             let quarter = i % 4;
             let label = format!("{} {}", DAY_NAMES[day], QUARTER_LABELS[quarter]);
 
-            let temp = mean_and_std(&buckets[i][0]);
-            let hum = mean_and_std(&buckets[i][1]);
-            let wind = mean_and_std(&buckets[i][2]);
-            let wdir = mean_and_std(&buckets[i][3]);
-            let lux = mean_and_std(&buckets[i][4]);
-            let rain = mean_and_std(&buckets[i][5]);
+            let b = &buckets[i];
+            let temp = mean_and_std(&b.temperature);
+            let hum = mean_and_std(&b.humidity);
+            let wind = mean_and_std(&b.wind_speed);
+            let wdir = vector_mean_direction(&b.wind_speed_for_dir, &b.wind_direction);
+            let lux = mean_and_std(&b.luminosity);
+            let rain = sum_and_max(&b.rainfall);
 
             WeekBucket {
                 label,
@@ -197,12 +253,11 @@ pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
                 humidity_std: hum.map(|t| t.1),
                 wind_speed_mean: wind.map(|t| t.0),
                 wind_speed_std: wind.map(|t| t.1),
-                wind_direction_mean: wdir.map(|t| t.0),
-                wind_direction_std: wdir.map(|t| t.1),
+                wind_direction_mean: wdir,
                 luminosity_mean: lux.map(|t| t.0),
                 luminosity_std: lux.map(|t| t.1),
-                rainfall_mean: rain.map(|t| t.0),
-                rainfall_std: rain.map(|t| t.1),
+                rainfall_sum: rain.map(|t| t.0),
+                rainfall_max: rain.map(|t| t.1),
             }
         })
         .collect()
