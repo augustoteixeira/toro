@@ -83,13 +83,13 @@ function activeTabIndex() {
 
 function decorateLinks() {
   var hash = window.location.hash;
-  if (!hash) return;
   var links = document.querySelectorAll('a.uk-button');
   links.forEach(function(a) {
     var href = a.getAttribute('href');
-    if (href && href.indexOf('#') === -1) {
-      a.setAttribute('href', href + hash);
-    }
+    if (!href) return;
+    // Strip any existing hash then append current one
+    var base = href.indexOf('#') >= 0 ? href.substring(0, href.indexOf('#')) : href;
+    a.setAttribute('href', hash ? base + hash : base);
   });
 }
 
