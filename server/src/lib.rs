@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use rand::RngCore;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
-use rocket::serde::Deserialize;
+use rocket::serde::{Deserialize, Serialize};
 use rocket::Request;
 use rocket_db_pools::{Database, sqlx};
 
@@ -93,7 +93,7 @@ pub async fn ensure_token(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Deserialize, Serialize, sqlx::FromRow)]
 #[serde(crate = "rocket::serde")]
 pub struct Reading {
     pub hour: String,
