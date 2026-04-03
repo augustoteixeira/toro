@@ -108,7 +108,7 @@ pub struct Reading {
 
 #[derive(Debug, Serialize)]
 #[serde(crate = "rocket::serde")]
-pub struct WeekBucket {
+pub struct AggregatedBucket {
     pub label: String,
     pub temperature_mean: Option<f64>,
     pub temperature_std: Option<f64>,
@@ -210,7 +210,30 @@ impl BucketCollector {
     }
 }
 
-pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
+fn collector_to_bucket(label: String, b: &BucketCollector) -> AggregatedBucket {
+    let temp = mean_and_std(&b.temperature);
+    let hum  = mean_and_std(&b.humidity);
+    let wind = mean_and_std(&b.wind_speed);
+    let wdir = vector_mean_direction(&b.wind_speed_for_dir, &b.wind_direction);
+    let lux  = mean_and_std(&b.luminosity);
+    let rain = sum_and_max(&b.rainfall);
+    AggregatedBucket {
+        label,
+        temperature_mean:    temp.map(|t| t.0),
+        temperature_std:     temp.map(|t| t.1),
+        humidity_mean:       hum.map(|t| t.0),
+        humidity_std:        hum.map(|t| t.1),
+        wind_speed_mean:     wind.map(|t| t.0),
+        wind_speed_std:      wind.map(|t| t.1),
+        wind_direction_mean: wdir,
+        luminosity_mean:     lux.map(|t| t.0),
+        luminosity_std:      lux.map(|t| t.1),
+        rainfall_sum:        rain.map(|t| t.0),
+        rainfall_max:        rain.map(|t| t.1),
+    }
+}
+
+pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
     let monday_date = NaiveDate::parse_from_str(monday, "%Y-%m-%d")
         .expect("invalid monday date");
 
@@ -236,29 +259,7 @@ pub fn aggregate_week(monday: &str, readings: &[Reading]) -> Vec<WeekBucket> {
             let day = i / 4;
             let quarter = i % 4;
             let label = format!("{} {}", DAY_NAMES[day], QUARTER_LABELS[quarter]);
-
-            let b = &buckets[i];
-            let temp = mean_and_std(&b.temperature);
-            let hum = mean_and_std(&b.humidity);
-            let wind = mean_and_std(&b.wind_speed);
-            let wdir = vector_mean_direction(&b.wind_speed_for_dir, &b.wind_direction);
-            let lux = mean_and_std(&b.luminosity);
-            let rain = sum_and_max(&b.rainfall);
-
-            WeekBucket {
-                label,
-                temperature_mean: temp.map(|t| t.0),
-                temperature_std: temp.map(|t| t.1),
-                humidity_mean: hum.map(|t| t.0),
-                humidity_std: hum.map(|t| t.1),
-                wind_speed_mean: wind.map(|t| t.0),
-                wind_speed_std: wind.map(|t| t.1),
-                wind_direction_mean: wdir,
-                luminosity_mean: lux.map(|t| t.0),
-                luminosity_std: lux.map(|t| t.1),
-                rainfall_sum: rain.map(|t| t.0),
-                rainfall_max: rain.map(|t| t.1),
-            }
+            collector_to_bucket(label, &buckets[i])
         })
         .collect()
 }
@@ -379,6 +380,93 @@ pub async fn generate_week_json(pool: &sqlx::SqlitePool, monday: &str) -> Result
         .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+pub async fn get_readings_for_month(
+    pool: &sqlx::SqlitePool,
+    month: &str,
+) -> Result<Vec<Reading>, sqlx::Error> {
+    let pattern = format!("{}%", month);
+    sqlx::query_as::<_, Reading>(
+        "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
+         FROM hourly_readings WHERE hour LIKE ? ORDER BY hour",
+    )
+    .bind(&pattern)
+    .fetch_all(pool)
+    .await
+}
+
+pub fn aggregate_month(month: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    // Determine number of days in month
+    let year: i32 = month[..4].parse().expect("invalid year");
+    let mo: u32 = month[5..7].parse().expect("invalid month");
+    let days_in_month = NaiveDate::from_ymd_opt(
+        if mo == 12 { year + 1 } else { year },
+        if mo == 12 { 1 } else { mo + 1 },
+        1,
+    )
+    .unwrap()
+    .signed_duration_since(NaiveDate::from_ymd_opt(year, mo, 1).unwrap())
+    .num_days() as usize;
+
+    let mut buckets: Vec<BucketCollector> =
+        (0..days_in_month).map(|_| BucketCollector::new()).collect();
+
+    for r in readings {
+        let date_str = &r.hour[..10];
+        let day: usize = date_str[8..10].parse::<usize>().unwrap_or(0);
+        if day >= 1 && day <= days_in_month {
+            let b = &mut buckets[day - 1];
+            if let Some(v) = r.temperature { b.temperature.push(v); }
+            if let Some(v) = r.humidity { b.humidity.push(v); }
+            if let Some(v) = r.wind_speed { b.wind_speed.push(v); }
+            if let (Some(s), Some(d)) = (r.wind_speed, r.wind_direction) {
+                b.wind_speed_for_dir.push(s);
+                b.wind_direction.push(d);
+            }
+            if let Some(v) = r.luminosity { b.luminosity.push(v); }
+            if let Some(v) = r.rainfall { b.rainfall.push(v); }
+        }
+    }
+
+    (0..days_in_month)
+        .map(|i| {
+            let label = format!("{}-{:02}", month, i + 1);
+            collector_to_bucket(label, &buckets[i])
+        })
+        .collect()
+}
+
+pub async fn generate_month_json(pool: &sqlx::SqlitePool, month: &str) -> Result<(), String> {
+    let readings = get_readings_for_month(pool, month)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let buckets = aggregate_month(month, &readings);
+
+    let json = rocket::serde::json::serde_json::to_string(&buckets)
+        .map_err(|e| e.to_string())?;
+
+    std::fs::create_dir_all("data/static/month")
+        .map_err(|e| e.to_string())?;
+
+    std::fs::write(format!("data/static/month/{}.json", month), json)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub async fn get_all_months(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT substr(hour, 1, 7) FROM hourly_readings ORDER BY 1",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Given a reading's hour string, return its month key e.g. "2025-01".
+pub fn month_of(hour: &str) -> String {
+    hour[..7].to_string()
 }
 
 pub struct TokenAuthenticated;

@@ -1,6 +1,9 @@
 mod common;
 
-use server::{Reading, aggregate_week, generate_week_json, get_readings_for_week, insert_reading};
+use server::{
+    Reading, aggregate_month, aggregate_week, generate_month_json, generate_week_json,
+    get_readings_for_week, insert_reading,
+};
 
 fn reading(hour: &str, temp: f64) -> Reading {
     Reading {
@@ -244,6 +247,63 @@ async fn generate_week_json_writes_valid_file() {
     assert!(contents.contains("Mon 12-18"));
     assert!(contents.contains("20.0"));
     assert!(contents.contains("30.0"));
+
+    std::fs::remove_file(path).ok();
+}
+
+// --- Month tests ---
+
+#[test]
+fn aggregate_month_produces_correct_number_of_buckets() {
+    // January has 31 days
+    let buckets = aggregate_month("2025-01", &[]);
+    assert_eq!(buckets.len(), 31);
+    // February 2025 (non-leap) has 28 days
+    let buckets = aggregate_month("2025-02", &[]);
+    assert_eq!(buckets.len(), 28);
+    // February 2024 (leap) has 29 days
+    let buckets = aggregate_month("2024-02", &[]);
+    assert_eq!(buckets.len(), 29);
+}
+
+#[test]
+fn aggregate_month_labels_are_full_dates() {
+    let buckets = aggregate_month("2025-01", &[]);
+    assert_eq!(buckets[0].label, "2025-01-01");
+    assert_eq!(buckets[14].label, "2025-01-15");
+    assert_eq!(buckets[30].label, "2025-01-31");
+}
+
+#[test]
+fn aggregate_month_buckets_readings_by_day() {
+    let readings = vec![
+        reading("2025-01-05T08", 20.0),
+        reading("2025-01-05T14", 30.0),  // same day -> bucket 4
+        reading("2025-01-20T10", 25.0),  // bucket 19
+    ];
+    let buckets = aggregate_month("2025-01", &readings);
+
+    assert_eq!(buckets[4].temperature_mean, Some(25.0));  // (20+30)/2
+    assert_eq!(buckets[19].temperature_mean, Some(25.0));
+    assert!(buckets[0].temperature_mean.is_none());
+}
+
+#[tokio::test]
+async fn generate_month_json_writes_valid_file() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    insert_reading(&pool, &reading("2025-01-05T10", 28.0)).await.unwrap();
+    insert_reading(&pool, &reading("2025-01-20T14", 32.0)).await.unwrap();
+
+    generate_month_json(&pool, "2025-01").await.expect("generate failed");
+
+    let path = "data/static/month/2025-01.json";
+    let contents = std::fs::read_to_string(path).expect("file not found");
+    assert!(contents.contains("2025-01-05"));
+    assert!(contents.contains("2025-01-20"));
+    assert!(contents.contains("28.0"));
+    assert!(contents.contains("32.0"));
 
     std::fs::remove_file(path).ok();
 }
