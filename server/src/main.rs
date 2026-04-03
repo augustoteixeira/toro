@@ -94,7 +94,7 @@ async fn day(
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
         return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let api_url = format!("/api/day/{}.json", date);
+    let api_url = format!("/api/day/{}", date);
     let markup = html! {
         html {
             head {
