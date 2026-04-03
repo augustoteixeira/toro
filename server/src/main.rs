@@ -60,8 +60,8 @@ async fn api_day(date: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
-fn day_exists(date: &str) -> bool {
-    std::path::Path::new(&format!("data/static/day/{}.json", date)).exists()
+fn static_exists(span: &str, key: &str) -> bool {
+    std::path::Path::new(&format!("data/static/{}/{}.json", span, key)).exists()
 }
 
 #[rocket::get("/day/<date>")]
@@ -80,10 +80,10 @@ async fn day(
     let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
     let prev = parsed
         .map(|d| (d - chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
-        .filter(|d| day_exists(d));
+        .filter(|d| static_exists("day", d));
     let next = parsed
         .map(|d| (d + chrono::Duration::days(1)).format("%Y-%m-%d").to_string())
-        .filter(|d| day_exists(d));
+        .filter(|d| static_exists("day", d));
 
     let markup = html! {
         (maud::DOCTYPE)
@@ -198,151 +198,190 @@ async fn week(
     limiter: &rocket::State<RateLimiter>,
     ip: IpAddr,
     monday: &str,
-) -> (Status, (ContentType, String)) {
+) -> (Status, maud::Markup) {
     if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
-        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+        return (Status::TooManyRequests, html! { "Too many requests" });
     }
-    let page = format!(r##"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Toro — Week of {monday}</title>
-  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
-  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
-  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
-</head>
-<body>
-  <div class="uk-container uk-margin-top">
-    <h1 class="uk-heading-small">Week of {monday}</h1>
-    <ul uk-tab>
-      <li class="uk-active"><a href="#">Temperature</a></li>
-      <li><a href="#">Humidity</a></li>
-      <li><a href="#">Wind Speed</a></li>
-      <li><a href="#">Wind Direction</a></li>
-      <li><a href="#">Luminosity</a></li>
-      <li><a href="#">Rainfall</a></li>
-    </ul>
-    <ul class="uk-switcher uk-margin">
-      <li><div id="chart-temperature"></div></li>
-      <li><div id="chart-humidity"></div></li>
-      <li><div id="chart-wind_speed"></div></li>
-      <li><div id="chart-wind_direction"></div></li>
-      <li><div id="chart-luminosity"></div></li>
-      <li><div id="chart-rainfall"></div></li>
-    </ul>
-  </div>
-  <script>
-    var errorBarMetrics = [
-      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
-      {{ field: "humidity", title: "Humidity (%)" }},
-      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
-      {{ field: "luminosity", title: "Luminosity (lux)" }}
-    ];
 
-    fetch("/api/week/{monday}")
-      .then(function(r) {{ return r.json(); }})
-      .then(function(data) {{
-        data.forEach(function(d, i) {{ d._index = i; }});
+    let parsed = NaiveDate::parse_from_str(monday, "%Y-%m-%d").ok();
 
-        errorBarMetrics.forEach(function(m) {{
-          var transformed = data.map(function(d) {{
-            return {{
-              label: d.label,
-              _index: d._index,
-              mean: d[m.field + "_mean"],
-              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
-              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
-                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
-            }};
-          }});
-          var spec = {{
-            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "width": 700,
-            "height": 300,
-            "data": {{ "values": transformed }},
-            "encoding": {{
-              "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
-                       "axis": {{ "values": [0,4,8,12,16,20,24],
-                                  "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
-            }},
-            "layer": [
-              {{
-                "mark": {{ "type": "line", "tooltip": true }},
-                "encoding": {{
-                  "y": {{ "field": "mean", "type": "quantitative", "title": m.title }}
-                }}
-              }},
-              {{
-                "mark": {{ "type": "errorbar" }},
-                "encoding": {{
-                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
-                  "y2": {{ "field": "hi" }}
-                }}
-              }}
-            ]
-          }};
-          vegaEmbed('#chart-' + m.field, spec, {{ "actions": false }});
-        }});
+    // Up: month containing this week's Wednesday
+    let wednesday = parsed.map(|d| d + chrono::Duration::days(2));
+    let month_key = wednesday.map(|w| w.format("%Y-%m").to_string());
 
-        // Wind direction: line chart, no error bars
-        var windDirData = data.map(function(d) {{
-          return {{ label: d.label, _index: d._index, direction: d.wind_direction_mean }};
-        }});
-        vegaEmbed('#chart-wind_direction', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700,
-          "height": 300,
-          "data": {{ "values": windDirData }},
-          "mark": {{ "type": "line", "tooltip": true, "point": true }},
-          "encoding": {{
-            "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
-                     "axis": {{ "values": [0,4,8,12,16,20,24],
-                                "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }},
-            "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)",
-                     "scale": {{ "domain": [0, 360] }} }}
-          }}
-        }}, {{ "actions": false }});
+    // Prev / next week
+    let prev = parsed
+        .map(|d| (d - chrono::Duration::weeks(1)).format("%Y-%m-%d").to_string())
+        .filter(|k| static_exists("week", k));
+    let next = parsed
+        .map(|d| (d + chrono::Duration::weeks(1)).format("%Y-%m-%d").to_string())
+        .filter(|k| static_exists("week", k));
 
-        // Rainfall: bar chart with sum, point overlay for max
-        var rainData = data.map(function(d) {{
-          return {{ label: d.label, _index: d._index, sum: d.rainfall_sum, max: d.rainfall_max }};
-        }});
-        vegaEmbed('#chart-rainfall', {{
-          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-          "width": 700,
-          "height": 300,
-          "data": {{ "values": rainData }},
-          "encoding": {{
-            "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
-                     "axis": {{ "values": [0,4,8,12,16,20,24],
-                                "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
-          }},
-          "layer": [
-            {{
-              "mark": {{ "type": "bar", "tooltip": true }},
-              "encoding": {{
-                "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }}
-              }}
-            }},
-            {{
-              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
-              "encoding": {{
-                "y": {{ "field": "max", "type": "quantitative" }}
-              }}
-            }}
-          ]
-        }}, {{ "actions": false }});
-      }})
-      .catch(function(err) {{
-        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+    // 7 day buttons
+    let day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let days: Vec<(String, String, bool)> = (0..7)
+        .map(|i| {
+            let date = parsed
+                .map(|d| (d + chrono::Duration::days(i)).format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+            let label = format!("{} {}", day_names[i as usize], &date[8..]);
+            let exists = static_exists("day", &date);
+            (date, label, exists)
+        })
+        .collect();
+
+    let markup = html! {
+        (maud::DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                title { "Toro — Week of " (monday) }
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
+                script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/vega@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
+                script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+            }
+            body {
+                div.uk-container."uk-margin-top" {
+                    h1."uk-heading-small" { "Week of " (monday) }
+
+                    // Up: month button
+                    @if let Some(ref mk) = month_key {
+                        div."uk-text-center"."uk-margin-small-bottom" {
+                            a."uk-button"."uk-button-default" href={ "/month/" (mk) } {
+                                (mk)
+                            }
+                        }
+                    }
+
+                    // Prev / Next week
+                    div."uk-margin-small-bottom" {
+                        @if let Some(ref p) = prev {
+                            a."uk-button"."uk-button-default" href={ "/week/" (p) } {
+                                "← " (p)
+                            }
+                        }
+                        @if let Some(ref n) = next {
+                            div style="float:right" {
+                                a."uk-button"."uk-button-default" href={ "/week/" (n) } {
+                                    (n) " →"
+                                }
+                            }
+                        }
+                    }
+                    div style="clear:both" {}
+
+                    // 7 day buttons
+                    div."uk-text-center"."uk-margin-small-bottom" {
+                        @for (date, label, exists) in &days {
+                            @if *exists {
+                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/day/" (date) } {
+                                    (label)
+                                }
+                            }
+                        }
+                    }
+
+                    ul uk-tab="" {
+                        li."uk-active" { a href="#" { "Temperature" } }
+                        li { a href="#" { "Humidity" } }
+                        li { a href="#" { "Wind Speed" } }
+                        li { a href="#" { "Wind Direction" } }
+                        li { a href="#" { "Luminosity" } }
+                        li { a href="#" { "Rainfall" } }
+                    }
+                    ul."uk-switcher"."uk-margin" {
+                        li { div #chart-temperature {} }
+                        li { div #chart-humidity {} }
+                        li { div #chart-wind_speed {} }
+                        li { div #chart-wind_direction {} }
+                        li { div #chart-luminosity {} }
+                        li { div #chart-rainfall {} }
+                    }
+                }
+                script {
+                    (maud::PreEscaped(week_chart_script(monday)))
+                }
+            }
+        }
+    };
+    (Status::Ok, markup)
+}
+
+fn week_chart_script(monday: &str) -> String {
+    format!(r##"
+var errorBarMetrics = [
+  {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+  {{ field: "humidity", title: "Humidity (%)" }},
+  {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+  {{ field: "luminosity", title: "Luminosity (lux)" }}
+];
+fetch("/api/week/{monday}")
+  .then(function(r) {{ return r.json(); }})
+  .then(function(data) {{
+    data.forEach(function(d, i) {{ d._index = i; }});
+    errorBarMetrics.forEach(function(m) {{
+      var transformed = data.map(function(d) {{
+        return {{
+          label: d.label, _index: d._index,
+          mean: d[m.field + "_mean"],
+          lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+          hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+            ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+        }};
       }});
-  </script>
-</body>
-</html>"##);
-    (Status::Ok, (ContentType::HTML, page))
+      vegaEmbed("#chart-" + m.field, {{
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "width": 700, "height": 300,
+        "data": {{ "values": transformed }},
+        "encoding": {{
+          "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                   "axis": {{ "values": [0,4,8,12,16,20,24],
+                              "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
+        }},
+        "layer": [
+          {{ "mark": {{ "type": "line", "tooltip": true }},
+             "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }} }},
+          {{ "mark": {{ "type": "errorbar" }},
+             "encoding": {{ "y": {{ "field": "lo", "type": "quantitative", "title": m.title }}, "y2": {{ "field": "hi" }} }} }}
+        ]
+      }}, {{ "actions": false }});
+    }});
+    vegaEmbed("#chart-wind_direction", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, _index: d._index, direction: d.wind_direction_mean }}; }}) }},
+      "mark": {{ "type": "line", "tooltip": true, "point": true }},
+      "encoding": {{
+        "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                 "axis": {{ "values": [0,4,8,12,16,20,24],
+                            "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }},
+        "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
+      }}
+    }}, {{ "actions": false }});
+    vegaEmbed("#chart-rainfall", {{
+      "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+      "width": 700, "height": 300,
+      "data": {{ "values": data.map(function(d) {{ return {{ label: d.label, _index: d._index, sum: d.rainfall_sum, max: d.rainfall_max }}; }}) }},
+      "encoding": {{
+        "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                 "axis": {{ "values": [0,4,8,12,16,20,24],
+                            "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
+      }},
+      "layer": [
+        {{ "mark": {{ "type": "bar", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }} }},
+        {{ "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+           "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }} }}
+      ]
+    }}, {{ "actions": false }});
+  }})
+  .catch(function(err) {{
+    document.getElementById("chart-temperature").textContent = "Error: " + err;
+  }});
+    "##)
 }
 
 #[rocket::get("/api/month/<month>")]
