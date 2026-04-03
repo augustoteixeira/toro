@@ -914,7 +914,10 @@ fn semesters_in_triennium(year_key: &str) -> Vec<String> {
         if total > 0 {
             let sy = (total - 1) / 12;
             let sm = ((total - 1) % 12 + 1) as u32;
-            semesters.push(format!("{}-{:02}", sy, sm));
+            // Only show semesters starting in January or June
+            if sm == 1 || sm == 6 {
+                semesters.push(format!("{}-{:02}", sy, sm));
+            }
         }
         total += 1;
     }
