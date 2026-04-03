@@ -138,6 +138,166 @@ async fn day(
     (Status::Ok, (ContentType::HTML, page))
 }
 
+#[rocket::get("/api/week/<monday>")]
+async fn api_week(monday: &str) -> Result<(ContentType, String), Status> {
+    let path = format!("data/static/week/{}.json", monday);
+    std::fs::read_to_string(&path)
+        .map(|contents| (ContentType::JSON, contents))
+        .map_err(|_| Status::NotFound)
+}
+
+#[rocket::get("/week/<monday>")]
+async fn week(
+    limiter: &rocket::State<RateLimiter>,
+    ip: IpAddr,
+    monday: &str,
+) -> (Status, (ContentType, String)) {
+    if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
+        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+    }
+    let page = format!(r##"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Toro — Week of {monday}</title>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
+</head>
+<body>
+  <div class="uk-container uk-margin-top">
+    <h1 class="uk-heading-small">Week of {monday}</h1>
+    <ul uk-tab>
+      <li class="uk-active"><a href="#">Temperature</a></li>
+      <li><a href="#">Humidity</a></li>
+      <li><a href="#">Wind Speed</a></li>
+      <li><a href="#">Wind Direction</a></li>
+      <li><a href="#">Luminosity</a></li>
+      <li><a href="#">Rainfall</a></li>
+    </ul>
+    <ul class="uk-switcher uk-margin">
+      <li><div id="chart-temperature"></div></li>
+      <li><div id="chart-humidity"></div></li>
+      <li><div id="chart-wind_speed"></div></li>
+      <li><div id="chart-wind_direction"></div></li>
+      <li><div id="chart-luminosity"></div></li>
+      <li><div id="chart-rainfall"></div></li>
+    </ul>
+  </div>
+  <script>
+    var errorBarMetrics = [
+      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+      {{ field: "humidity", title: "Humidity (%)" }},
+      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+      {{ field: "luminosity", title: "Luminosity (lux)" }}
+    ];
+
+    fetch("/api/week/{monday}")
+      .then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        data.forEach(function(d, i) {{ d._index = i; }});
+
+        errorBarMetrics.forEach(function(m) {{
+          var transformed = data.map(function(d) {{
+            return {{
+              label: d.label,
+              _index: d._index,
+              mean: d[m.field + "_mean"],
+              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+            }};
+          }});
+          var spec = {{
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "width": 700,
+            "height": 300,
+            "data": {{ "values": transformed }},
+            "encoding": {{
+              "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                       "axis": {{ "values": [0,4,8,12,16,20,24],
+                                  "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
+            }},
+            "layer": [
+              {{
+                "mark": {{ "type": "line", "tooltip": true }},
+                "encoding": {{
+                  "y": {{ "field": "mean", "type": "quantitative", "title": m.title }}
+                }}
+              }},
+              {{
+                "mark": {{ "type": "errorbar" }},
+                "encoding": {{
+                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
+                  "y2": {{ "field": "hi" }}
+                }}
+              }}
+            ]
+          }};
+          vegaEmbed('#chart-' + m.field, spec, {{ "actions": false }});
+        }});
+
+        // Wind direction: line chart, no error bars
+        var windDirData = data.map(function(d) {{
+          return {{ label: d.label, _index: d._index, direction: d.wind_direction_mean }};
+        }});
+        vegaEmbed('#chart-wind_direction', {{
+          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+          "width": 700,
+          "height": 300,
+          "data": {{ "values": windDirData }},
+          "mark": {{ "type": "line", "tooltip": true, "point": true }},
+          "encoding": {{
+            "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                     "axis": {{ "values": [0,4,8,12,16,20,24],
+                                "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }},
+            "y": {{ "field": "direction", "type": "quantitative", "title": "Wind Direction (\u00b0)",
+                     "scale": {{ "domain": [0, 360] }} }}
+          }}
+        }}, {{ "actions": false }});
+
+        // Rainfall: bar chart with sum, point overlay for max
+        var rainData = data.map(function(d) {{
+          return {{ label: d.label, _index: d._index, sum: d.rainfall_sum, max: d.rainfall_max }};
+        }});
+        vegaEmbed('#chart-rainfall', {{
+          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+          "width": 700,
+          "height": 300,
+          "data": {{ "values": rainData }},
+          "encoding": {{
+            "x": {{ "field": "_index", "type": "quantitative", "title": "Quarter",
+                     "axis": {{ "values": [0,4,8,12,16,20,24],
+                                "labelExpr": "['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][floor(datum.value/4)]" }} }}
+          }},
+          "layer": [
+            {{
+              "mark": {{ "type": "bar", "tooltip": true }},
+              "encoding": {{
+                "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }}
+              }}
+            }},
+            {{
+              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+              "encoding": {{
+                "y": {{ "field": "max", "type": "quantitative" }}
+              }}
+            }}
+          ]
+        }}, {{ "actions": false }});
+      }})
+      .catch(function(err) {{
+        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+      }});
+  </script>
+</body>
+</html>"##);
+    (Status::Ok, (ContentType::HTML, page))
+}
+
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
     use rocket_db_pools::Database;
@@ -162,7 +322,7 @@ async fn main() -> Result<(), rocket::Error> {
                 }
             }
         }))
-        .mount("/", rocket::routes![index, post_reading, day, api_day])
+        .mount("/", rocket::routes![index, post_reading, day, api_day, week, api_week])
         .ignite()
         .await?;
 
