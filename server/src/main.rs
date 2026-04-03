@@ -69,6 +69,59 @@ fn static_exists(span: &str, key: &str) -> bool {
     std::path::Path::new(&format!("data/static/{}/{}.json", span, key)).exists()
 }
 
+/// JS snippet injected into every page's <head>.
+/// Handles hash-based tab activation and propagation to nav links.
+fn tab_nav_js() -> &'static str {
+    r##"<script>
+var TAB_SLUGS = ["temperature","humidity","wind-speed","wind-direction","luminosity","rainfall"];
+
+function activeTabIndex() {
+  var hash = window.location.hash.replace('#','');
+  var idx = TAB_SLUGS.indexOf(hash);
+  return idx >= 0 ? idx : 0;
+}
+
+function decorateLinks() {
+  var hash = window.location.hash;
+  if (!hash) return;
+  var links = document.querySelectorAll('a.uk-button');
+  links.forEach(function(a) {
+    var href = a.getAttribute('href');
+    if (href && href.indexOf('#') === -1) {
+      a.setAttribute('href', href + hash);
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var idx = activeTabIndex();
+  // Activate the correct tab via UIkit after it initialises
+  UIkit.util.on(document, 'beforeshow', function(e) {}, '.uk-switcher');
+  setTimeout(function() {
+    var tabEl = document.querySelector('[uk-tab]');
+    if (tabEl && idx > 0) {
+      UIkit.tab(tabEl).show(idx);
+    }
+    decorateLinks();
+  }, 0);
+
+  // Update hash when tab changes
+  UIkit.util.on(document, 'shown', function() {
+    var tabEl = document.querySelector('[uk-tab]');
+    if (!tabEl) return;
+    var items = tabEl.querySelectorAll('li');
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].classList.contains('uk-active')) {
+        history.replaceState(null, '', '#' + TAB_SLUGS[i]);
+        decorateLinks();
+        break;
+      }
+    }
+  });
+});
+</script>"##
+}
+
 #[rocket::get("/day/<date>")]
 async fn day(
     limiter: &rocket::State<RateLimiter>,
@@ -101,6 +154,7 @@ async fn day(
                 script src="https://cdn.jsdelivr.net/npm/vega@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+                (maud::PreEscaped(tab_nav_js()))
             }
             body {
                 div.uk-container."uk-margin-top" {
@@ -246,6 +300,7 @@ async fn week(
                 script src="https://cdn.jsdelivr.net/npm/vega@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+                (maud::PreEscaped(tab_nav_js()))
             }
             body {
                 div.uk-container."uk-margin-top" {
@@ -486,6 +541,7 @@ async fn month(
                 script src="https://cdn.jsdelivr.net/npm/vega@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+                (maud::PreEscaped(tab_nav_js()))
             }
             body {
                 div.uk-container."uk-margin-top" {
@@ -704,6 +760,7 @@ async fn semester(
                 script src="https://cdn.jsdelivr.net/npm/vega@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+                (maud::PreEscaped(tab_nav_js()))
             }
             body {
                 div.uk-container."uk-margin-top" {
@@ -899,6 +956,7 @@ async fn triennium(
                 script src="https://cdn.jsdelivr.net/npm/vega@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-lite@5" {}
                 script src="https://cdn.jsdelivr.net/npm/vega-embed@6" {}
+                (maud::PreEscaped(tab_nav_js()))
             }
             body {
                 div.uk-container."uk-margin-top" {
