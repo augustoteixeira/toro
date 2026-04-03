@@ -24,6 +24,7 @@ esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.52.1", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
+embedded-svc = { version = "0.29", default-features = false }
 # embassy-executor is not compatible with esp-idf's FreeRTOS runtime; use
 # block_on + join/select for concurrency, or std::thread for parallelism.
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
