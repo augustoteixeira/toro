@@ -62,23 +62,43 @@ fn day_chart_script(api_url: &str) -> String {
             { field: "rainfall", title: "Rainfall (mm)", mark: "bar" }
         ];
 
+        const rendered = {};
+
+        function renderChart(index, data) {
+            const m = metrics[index];
+            if (rendered[m.field]) return;
+            rendered[m.field] = true;
+            const spec = {
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "width": "container",
+                "height": 300,
+                "data": { "values": data },
+                "mark": { "type": m.mark, "tooltip": true },
+                "encoding": {
+                    "x": { "field": "hour", "type": "ordinal", "title": "Hour" },
+                    "y": { "field": m.field, "type": "quantitative", "title": m.title }
+                }
+            };
+            vegaEmbed("#chart-" + m.field, spec, { "actions": false });
+        }
+
         fetch(API_URL).then(r => r.json()).then(data => {
-            data.forEach(d => {
-                d.hour = d.hour.substring(11);
-            });
-            metrics.forEach(m => {
-                const spec = {
-                    "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-                    "width": "container",
-                    "height": 300,
-                    "data": { "values": data },
-                    "mark": { "type": m.mark, "tooltip": true },
-                    "encoding": {
-                        "x": { "field": "hour", "type": "ordinal", "title": "Hour" },
-                        "y": { "field": m.field, "type": "quantitative", "title": m.title }
+            data.forEach(d => { d.hour = d.hour.substring(11); });
+
+            // Render the first (visible) tab immediately
+            renderChart(0, data);
+
+            // Render other tabs when they become visible
+            UIkit.util.on(document, "shown", function(e) {
+                const switcher = document.querySelector(".uk-switcher");
+                if (!switcher) return;
+                const items = switcher.children;
+                for (let i = 0; i < items.length; i++) {
+                    if (items[i].classList.contains("uk-active")) {
+                        renderChart(i, data);
+                        break;
                     }
-                };
-                vegaEmbed("#chart-" + m.field, spec, { "actions": false });
+                }
             });
         });
     "##;
