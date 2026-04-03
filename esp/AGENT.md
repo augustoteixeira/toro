@@ -1,5 +1,16 @@
 # ESP Agent Instructions
 
+## Credentials
+
+WiFi credentials are stored in `esp/cfg.toml` (gitignored). Copy the example and fill in your values:
+
+```bash
+cp cfg.toml.example cfg.toml
+# edit cfg.toml
+```
+
+The build script (`embuild`) reads `cfg.toml` and exposes the values as compile-time env vars. Access them in Rust with `env!("CFG_TORO_WIFI_SSID")` and `env!("CFG_TORO_WIFI_PASSWORD")`.
+
 ## Environment
 
 - `cargo` is not on the default `PATH`; prefix commands with `export PATH="$HOME/.cargo/bin:$PATH"` or rely on the shell having it set.
