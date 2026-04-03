@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use maud::html;
-use rocket::http::Status;
+use rocket::http::{ContentType, Status};
 use rocket::serde::json::Json;
 use server::{
     Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, generate_day_json,
@@ -41,6 +41,14 @@ async fn post_reading(
         }
         Err(_) => Status::UnprocessableEntity,
     }
+}
+
+#[rocket::get("/api/day/<date>")]
+async fn api_day(date: &str) -> Result<(ContentType, String), Status> {
+    let path = format!("data/static/day/{}.json", date);
+    std::fs::read_to_string(&path)
+        .map(|contents| (ContentType::JSON, contents))
+        .map_err(|_| Status::NotFound)
 }
 
 #[rocket::get("/day/<date>")]
@@ -111,7 +119,7 @@ async fn main() -> Result<(), rocket::Error> {
                 }
             }
         }))
-        .mount("/", rocket::routes![index, post_reading, day])
+        .mount("/", rocket::routes![index, post_reading, day, api_day])
         .ignite()
         .await?;
 
