@@ -11,7 +11,8 @@ use server::{
     generate_day_json, generate_month_json, generate_semester_json, generate_triennium_json,
     generate_week_json,
     get_all_dates, get_all_months, get_all_semesters, get_all_triennia, get_all_weeks,
-    insert_reading, migrate, monday_of, month_of, semester_start_of, triennia_containing,
+    insert_reading, migrate, monday_of, month_of, semester_start_of, semesters_containing,
+    triennia_containing,
 };
 
 #[rocket::get("/")]
@@ -44,7 +45,9 @@ async fn post_reading(
             let _ = generate_day_json(&db.0, &date).await;
             let _ = generate_week_json(&db.0, &monday_of(&reading.hour)).await;
             let _ = generate_month_json(&db.0, &month_of(&reading.hour)).await;
-            let _ = generate_semester_json(&db.0, &semester_start_of(&reading.hour)).await;
+            for sem_start in semesters_containing(&reading.hour) {
+                let _ = generate_semester_json(&db.0, &sem_start).await;
+            }
             for tri_start in triennia_containing(&reading.hour) {
                 let _ = generate_triennium_json(&db.0, &tri_start).await;
             }
@@ -105,7 +108,7 @@ async fn day(
 
                     // Week button — centered
                     div."uk-text-center"."uk-margin-small-bottom" {
-                        a."uk-button"."uk-button-default" href={ "/week/" (monday) } {
+                        a."uk-button"."uk-button-primary" href={ "/week/" (monday) } {
                             (week_label)
                         }
                     }
@@ -113,13 +116,13 @@ async fn day(
                     // Prev / Next day buttons
                     div."uk-margin-small-bottom" {
                         @if let Some(ref p) = prev {
-                            a."uk-button"."uk-button-default" href={ "/day/" (p) } {
+                            a."uk-button"."uk-button-primary" href={ "/day/" (p) } {
                                 "← " (p)
                             }
                         }
                         @if let Some(ref n) = next {
                             div style="float:right" {
-                                a."uk-button"."uk-button-default" href={ "/day/" (n) } {
+                                a."uk-button"."uk-button-primary" href={ "/day/" (n) } {
                                     (n) " →"
                                 }
                             }
@@ -251,7 +254,7 @@ async fn week(
                     // Up: month button
                     @if let Some(ref mk) = month_key {
                         div."uk-text-center"."uk-margin-small-bottom" {
-                            a."uk-button"."uk-button-default" href={ "/month/" (mk) } {
+                            a."uk-button"."uk-button-primary" href={ "/month/" (mk) } {
                                 (mk)
                             }
                         }
@@ -260,13 +263,13 @@ async fn week(
                     // Prev / Next week
                     div."uk-margin-small-bottom" {
                         @if let Some(ref p) = prev {
-                            a."uk-button"."uk-button-default" href={ "/week/" (p) } {
+                            a."uk-button"."uk-button-primary" href={ "/week/" (p) } {
                                 "← " (p)
                             }
                         }
                         @if let Some(ref n) = next {
                             div style="float:right" {
-                                a."uk-button"."uk-button-default" href={ "/week/" (n) } {
+                                a."uk-button"."uk-button-primary" href={ "/week/" (n) } {
                                     (n) " →"
                                 }
                             }
@@ -278,7 +281,7 @@ async fn week(
                     div."uk-text-center"."uk-margin-small-bottom" {
                         @for (date, label, exists) in &days {
                             @if *exists {
-                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/day/" (date) } {
+                                a."uk-button"."uk-button-primary"."uk-button-small"."uk-margin-small-right" href={ "/day/" (date) } {
                                     (label)
                                 }
                             }
@@ -490,7 +493,7 @@ async fn month(
 
                     // Up: semester button
                     div."uk-text-center"."uk-margin-small-bottom" {
-                        a."uk-button"."uk-button-default" href={ "/semester/" (sem_key) } {
+                        a."uk-button"."uk-button-primary" href={ "/semester/" (sem_key) } {
                             "Semester of " (sem_key)
                         }
                     }
@@ -498,13 +501,13 @@ async fn month(
                     // Prev / Next month
                     div."uk-margin-small-bottom" {
                         @if let Some(ref p) = prev {
-                            a."uk-button"."uk-button-default" href={ "/month/" (p) } {
+                            a."uk-button"."uk-button-primary" href={ "/month/" (p) } {
                                 "← " (p)
                             }
                         }
                         @if let Some(ref n) = next {
                             div style="float:right" {
-                                a."uk-button"."uk-button-default" href={ "/month/" (n) } {
+                                a."uk-button"."uk-button-primary" href={ "/month/" (n) } {
                                     (n) " →"
                                 }
                             }
@@ -516,7 +519,7 @@ async fn month(
                     div."uk-text-center"."uk-margin-small-bottom" {
                         @for (monday, exists) in &weeks {
                             @if *exists {
-                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/week/" (monday) } {
+                                a."uk-button"."uk-button-primary"."uk-button-small"."uk-margin-small-right" href={ "/week/" (monday) } {
                                     "W " (monday)
                                 }
                             }
@@ -642,24 +645,29 @@ fn months_in_semester(start_monday: &str) -> Vec<String> {
 }
 
 /// The triennium whose middle year contains the given semester.
-/// Middle year of triennium starting YYYY-MM-01 is YYYY+1.
-/// We find the triennium where start_year+1 contains the semester's midpoint month.
-fn triennium_for_semester(start_monday: &str) -> String {
-    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d").unwrap();
-    let midpoint = start + chrono::Duration::weeks(13); // middle of semester
-    let mid_month = format!("{}-{:02}T15", midpoint.year(), midpoint.month());
-    // Among all triennia containing this month, pick the one whose middle year matches
-    let candidates = triennia_containing(&mid_month);
-    // Middle year of triennium YYYY-MM-01 = YYYY+1
-    // We want the one where midpoint.year() == start_year + 1
+/// Semester key is "YYYY-MM-01". Midpoint is 13 weeks in.
+/// Middle year of a triennium starting YYYY-MM-01 is YYYY+1.
+fn triennium_for_semester(start: &str) -> String {
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
+    let midpoint = start_date + chrono::Duration::weeks(13);
+    let mid_hour = format!("{}-{:02}-15T00", midpoint.year(), midpoint.month());
+    let candidates = triennia_containing(&mid_hour);
     for c in &candidates {
         let tri_year: i32 = c[..4].parse().unwrap();
         if tri_year + 1 == midpoint.year() {
             return c.clone();
         }
     }
-    // Fallback: first candidate
     candidates.into_iter().next().unwrap_or_default()
+}
+
+fn shift_month(ym01: &str, delta: i32) -> String {
+    let year: i32 = ym01[..4].parse().unwrap();
+    let mo: u32 = ym01[5..7].parse().unwrap();
+    let total = year * 12 + mo as i32 + delta;
+    let ny = (total - 1) / 12;
+    let nm = ((total - 1) % 12 + 1) as u32;
+    format!("{}-{:02}-01", ny, nm)
 }
 
 #[rocket::get("/semester/<start>")]
@@ -672,18 +680,18 @@ async fn semester(
         return (Status::TooManyRequests, html! { "Too many requests" });
     }
 
-    let parsed = NaiveDate::parse_from_str(start, "%Y-%m-%d").ok();
-
     // Up: triennium
     let tri_key = triennium_for_semester(start);
 
-    // Prev / next semester
-    let prev = parsed
-        .map(|d| (d - chrono::Duration::weeks(26)).format("%Y-%m-%d").to_string())
-        .filter(|k| static_exists("semester", k));
-    let next = parsed
-        .map(|d| (d + chrono::Duration::weeks(26)).format("%Y-%m-%d").to_string())
-        .filter(|k| static_exists("semester", k));
+    // Prev / next semester (±1 month)
+    let prev = {
+        let p = shift_month(start, -1);
+        if static_exists("semester", &p) { Some(p) } else { None }
+    };
+    let next = {
+        let n = shift_month(start, 1);
+        if static_exists("semester", &n) { Some(n) } else { None }
+    };
 
     // Month buttons
     let months: Vec<(String, bool)> = months_in_semester(start)
@@ -709,7 +717,7 @@ async fn semester(
 
                     // Up: triennium
                     div."uk-text-center"."uk-margin-small-bottom" {
-                        a."uk-button"."uk-button-default" href={ "/triennium/" (tri_key) } {
+                        a."uk-button"."uk-button-primary" href={ "/triennium/" (tri_key) } {
                             "Triennium " (tri_key)
                         }
                     }
@@ -717,13 +725,13 @@ async fn semester(
                     // Prev / Next
                     div."uk-margin-small-bottom" {
                         @if let Some(ref p) = prev {
-                            a."uk-button"."uk-button-default" href={ "/semester/" (p) } {
+                            a."uk-button"."uk-button-primary" href={ "/semester/" (p) } {
                                 "← " (p)
                             }
                         }
                         @if let Some(ref n) = next {
                             div style="float:right" {
-                                a."uk-button"."uk-button-default" href={ "/semester/" (n) } {
+                                a."uk-button"."uk-button-primary" href={ "/semester/" (n) } {
                                     (n) " →"
                                 }
                             }
@@ -735,7 +743,7 @@ async fn semester(
                     div."uk-text-center"."uk-margin-small-bottom" {
                         @for (mo, exists) in &months {
                             @if *exists {
-                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/month/" (mo) } {
+                                a."uk-button"."uk-button-primary"."uk-button-small"."uk-margin-small-right" href={ "/month/" (mo) } {
                                     (mo)
                                 }
                             }
@@ -839,34 +847,27 @@ async fn api_triennium(start: &str) -> Result<(ContentType, String), Status> {
         .map_err(|_| Status::NotFound)
 }
 
-/// Semesters that overlap with a triennium (36 months starting from start).
-fn semesters_in_triennium(start: &str) -> Vec<String> {
-    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").unwrap();
-    let start_year: i32 = start[..4].parse().unwrap();
-    let start_mo: u32 = start[5..7].parse().unwrap();
-    let total = start_mo as i32 - 1 + 36;
-    let end_year = start_year + (total - 1) / 12;
-    let end_mo = ((total - 1) % 12 + 1) as u32;
-    let end_date = NaiveDate::from_ymd_opt(end_year, end_mo, 28).unwrap(); // safe lower bound
+/// Semester starts ("YYYY-MM-01") whose 26-week window overlaps with the triennium.
+/// Triennium spans 36 months from start. A semester overlaps if it starts within
+/// the triennium window or its window reaches back into it (up to 5 months before end).
+fn semesters_in_triennium(tri_start: &str) -> Vec<String> {
+    let tri_year: i32 = tri_start[..4].parse().unwrap();
+    let tri_mo: u32 = tri_start[5..7].parse().unwrap();
+    let tri_start_total = tri_year * 12 + tri_mo as i32;
+    let tri_end_total = tri_start_total + 35; // last month of triennium
 
-    // Iterate semester starts (every 26 weeks) that could overlap
-    // Start from the semester containing the triennium start
-    let sem_start = semester_start_of(&format!("{}T00", start));
-    let mut cursor = NaiveDate::parse_from_str(&sem_start, "%Y-%m-%d").unwrap();
-    // Go back one semester in case it overlaps
-    let one_back = cursor - chrono::Duration::weeks(26);
-    if one_back + chrono::Duration::weeks(26) > start_date {
-        cursor = one_back;
-    }
-
+    // A semester starting at total T covers T to T+5 (approx 26 weeks ≈ 6 months)
+    // It overlaps if T <= tri_end_total and T+5 >= tri_start_total
+    // => T >= tri_start_total - 5 and T <= tri_end_total
     let mut semesters = vec![];
-    while cursor <= end_date {
-        let sem_end = cursor + chrono::Duration::weeks(26) - chrono::Duration::days(1);
-        // Check if this semester overlaps with the triennium
-        if sem_end >= start_date {
-            semesters.push(cursor.format("%Y-%m-%d").to_string());
+    let mut total = tri_start_total - 5;
+    while total <= tri_end_total {
+        if total > 0 {
+            let sy = (total - 1) / 12;
+            let sm = ((total - 1) % 12 + 1) as u32;
+            semesters.push(format!("{}-{:02}-01", sy, sm));
         }
-        cursor += chrono::Duration::weeks(26);
+        total += 1;
     }
     semesters
 }
@@ -918,13 +919,13 @@ async fn triennium(
                     // Sideways: prev / next (±1 year)
                     div."uk-margin-small-bottom" {
                         @if let Some(ref p) = prev {
-                            a."uk-button"."uk-button-default" href={ "/triennium/" (p) } {
+                            a."uk-button"."uk-button-primary" href={ "/triennium/" (p) } {
                                 "← " (p)
                             }
                         }
                         @if let Some(ref n) = next {
                             div style="float:right" {
-                                a."uk-button"."uk-button-default" href={ "/triennium/" (n) } {
+                                a."uk-button"."uk-button-primary" href={ "/triennium/" (n) } {
                                     (n) " →"
                                 }
                             }
@@ -936,7 +937,7 @@ async fn triennium(
                     div."uk-text-center"."uk-margin-small-bottom" {
                         @for (sem, exists) in &semesters {
                             @if *exists {
-                                a."uk-button"."uk-button-default"."uk-button-small"."uk-margin-small-right" href={ "/semester/" (sem) } {
+                                a."uk-button"."uk-button-primary"."uk-button-small"."uk-margin-small-right" href={ "/semester/" (sem) } {
                                     "Sem " (sem)
                                 }
                             }

@@ -471,15 +471,17 @@ pub fn month_of(hour: &str) -> String {
 
 const SEMESTER_WEEKS: usize = 26;
 
+/// Semester key format: "YYYY-MM-01" (first of a month).
+/// A semester spans 26 weeks from that date, bucketed by week.
+
 pub async fn get_readings_for_semester(
     pool: &sqlx::SqlitePool,
-    start_monday: &str,
+    start: &str,  // "YYYY-MM-01"
 ) -> Result<Vec<Reading>, sqlx::Error> {
-    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d")
-        .expect("invalid start monday");
-    let end = start + chrono::Duration::weeks(SEMESTER_WEEKS as i64) - chrono::Duration::days(1);
-    let start_str = format!("{}T00", start_monday);
-    let end_str = format!("{}T23", end.format("%Y-%m-%d"));
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").expect("invalid semester start");
+    let end_date = start_date + chrono::Duration::weeks(SEMESTER_WEEKS as i64) - chrono::Duration::days(1);
+    let start_str = format!("{}T00", start);
+    let end_str = format!("{}T23", end_date.format("%Y-%m-%d"));
     sqlx::query_as::<_, Reading>(
         "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
          FROM hourly_readings WHERE hour >= ? AND hour <= ? ORDER BY hour",
@@ -490,19 +492,16 @@ pub async fn get_readings_for_semester(
     .await
 }
 
-pub fn aggregate_semester(start_monday: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
-    let start = NaiveDate::parse_from_str(start_monday, "%Y-%m-%d")
-        .expect("invalid start monday");
+pub fn aggregate_semester(start: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    let start_date = NaiveDate::parse_from_str(start, "%Y-%m-%d").expect("invalid semester start");
 
     let mut buckets: Vec<BucketCollector> =
         (0..SEMESTER_WEEKS).map(|_| BucketCollector::new()).collect();
 
     for r in readings {
         let date = NaiveDate::parse_from_str(&r.hour[..10], "%Y-%m-%d").unwrap();
-        let day_offset = (date - start).num_days();
-        if day_offset < 0 {
-            continue;
-        }
+        let day_offset = (date - start_date).num_days();
+        if day_offset < 0 { continue; }
         let week_offset = day_offset / 7;
         if (week_offset as usize) < SEMESTER_WEEKS {
             let b = &mut buckets[week_offset as usize];
@@ -520,22 +519,19 @@ pub fn aggregate_semester(start_monday: &str, readings: &[Reading]) -> Vec<Aggre
 
     (0..SEMESTER_WEEKS)
         .map(|i| {
-            let week_start = start + chrono::Duration::weeks(i as i64);
+            let week_start = start_date + chrono::Duration::weeks(i as i64);
             let label = week_start.format("%Y-%m-%d").to_string();
             collector_to_bucket(label, &buckets[i])
         })
         .collect()
 }
 
-pub async fn generate_semester_json(
-    pool: &sqlx::SqlitePool,
-    start_monday: &str,
-) -> Result<(), String> {
-    let readings = get_readings_for_semester(pool, start_monday)
+pub async fn generate_semester_json(pool: &sqlx::SqlitePool, start: &str) -> Result<(), String> {
+    let readings = get_readings_for_semester(pool, start)
         .await
         .map_err(|e| e.to_string())?;
 
-    let buckets = aggregate_semester(start_monday, &readings);
+    let buckets = aggregate_semester(start, &readings);
 
     let json = rocket::serde::json::serde_json::to_string(&buckets)
         .map_err(|e| e.to_string())?;
@@ -543,43 +539,70 @@ pub async fn generate_semester_json(
     std::fs::create_dir_all("data/static/semester")
         .map_err(|e| e.to_string())?;
 
-    std::fs::write(format!("data/static/semester/{}.json", start_monday), json)
+    std::fs::write(format!("data/static/semester/{}.json", start), json)
         .map_err(|e| e.to_string())?;
 
     Ok(())
 }
 
-/// Returns all distinct semester start Mondays (every 26 weeks) that overlap with the data.
+/// Returns all semester starts (one per month) that overlap with the data.
 pub async fn get_all_semesters(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
-    let dates: Vec<String> = get_all_dates(pool).await?;
-    if dates.is_empty() {
+    let months: Vec<String> = get_all_months(pool).await?;
+    if months.is_empty() {
         return Ok(vec![]);
     }
-    // Find the earliest Monday in the data
-    let first = NaiveDate::parse_from_str(&dates[0], "%Y-%m-%d").unwrap();
-    let first_monday = first - chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
-    let last = NaiveDate::parse_from_str(dates.last().unwrap(), "%Y-%m-%d").unwrap();
+    // One semester per month start, from first to last data month.
+    // Each spans 26 weeks from its start date.
+    let first_year: i32 = months[0][..4].parse().unwrap();
+    let first_mo: u32 = months[0][5..7].parse().unwrap();
+    let last_year: i32 = months.last().unwrap()[..4].parse().unwrap();
+    let last_mo: u32 = months.last().unwrap()[5..7].parse().unwrap();
+
+    let first_total = first_year * 12 + first_mo as i32;
+    let latest_total = last_year * 12 + last_mo as i32;
 
     let mut semesters = vec![];
-    let mut cursor = first_monday;
-    while cursor <= last {
-        semesters.push(cursor.format("%Y-%m-%d").to_string());
-        cursor += chrono::Duration::weeks(SEMESTER_WEEKS as i64);
+    let mut total = first_total;
+    while total <= latest_total {
+        let y = (total - 1) / 12;
+        let m = ((total - 1) % 12 + 1) as u32;
+        semesters.push(format!("{}-{:02}-01", y, m));
+        total += 1;
     }
     Ok(semesters)
 }
 
-/// Given a reading's hour string, return the semester start Monday it belongs to.
+/// All semester starts ("YYYY-MM-01") whose 26-week window contains the given reading.
+/// A reading in month M is contained in semesters starting from M-5 to M (6 months back).
+pub fn semesters_containing(hour: &str) -> Vec<String> {
+    let year: i32 = hour[..4].parse().expect("invalid year");
+    let mo: u32 = hour[5..7].parse().expect("invalid month");
+    let target_total = year * 12 + mo as i32;
+
+    // A semester starting at total T covers approximately T to T+6 months (26 weeks ≈ 6 months)
+    // So semesters that contain this month start from target_total-5 to target_total
+    let mut results = vec![];
+    for offset in 0..=5i32 {
+        let start_total = target_total - offset;
+        if start_total > 0 {
+            let sy = (start_total - 1) / 12;
+            let sm = ((start_total - 1) % 12 + 1) as u32;
+            results.push(format!("{}-{:02}-01", sy, sm));
+        }
+    }
+    results.sort();
+    results
+}
+
+/// Given a reading's hour, return the semester for which that month is the 3rd month.
+/// i.e. semester starting 2 months before the reading's month.
 pub fn semester_start_of(hour: &str) -> String {
-    let date = NaiveDate::parse_from_str(&hour[..10], "%Y-%m-%d")
-        .expect("invalid date in hour string");
-    let monday = date - chrono::Duration::days(date.weekday().num_days_from_monday() as i64);
-    // Find how many 26-week periods since the Unix epoch Monday (1970-01-05)
-    let epoch_monday = NaiveDate::from_ymd_opt(1970, 1, 5).unwrap();
-    let weeks_since_epoch = (monday - epoch_monday).num_weeks();
-    let semester_index = weeks_since_epoch.div_euclid(SEMESTER_WEEKS as i64);
-    let start = epoch_monday + chrono::Duration::weeks(semester_index * SEMESTER_WEEKS as i64);
-    start.format("%Y-%m-%d").to_string()
+    let year: i32 = hour[..4].parse().expect("invalid year");
+    let mo: u32 = hour[5..7].parse().expect("invalid month");
+    let total = year * 12 + mo as i32 - 2; // 2 months back
+    let sy = (total - 1) / 12;
+    let sm = ((total - 1) % 12 + 1) as u32;
+    format!("{}-{:02}-01", sy, sm)
 }
 
 const TRIENNIUM_MONTHS: usize = 36;
