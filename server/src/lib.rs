@@ -137,6 +137,12 @@ pub async fn get_readings_for_day(
     .await
 }
 
+pub async fn get_all_dates(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT DISTINCT substr(hour, 1, 10) FROM hourly_readings ORDER BY 1")
+        .fetch_all(pool)
+        .await
+}
+
 pub async fn generate_day_json(pool: &sqlx::SqlitePool, date: &str) -> Result<(), String> {
     let readings = get_readings_for_day(pool, date)
         .await

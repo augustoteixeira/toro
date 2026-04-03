@@ -5,16 +5,4 @@ generate:
   python3 generate_fake.py | sqlite3 db.sqlite
 
 regenerate:
-  mkdir -p static/day
-  for date in $(sqlite3 db.sqlite "SELECT DISTINCT substr(hour, 1, 10) FROM hourly_readings;"); do \
-    sqlite3 db.sqlite "SELECT json_group_array(json_object( \
-      'hour', hour, \
-      'temperature', temperature, \
-      'humidity', humidity, \
-      'wind_speed', wind_speed, \
-      'wind_direction', wind_direction, \
-      'luminosity', luminosity, \
-      'rainfall', rainfall \
-    )) FROM hourly_readings WHERE hour LIKE '${date}%' ORDER BY hour;" > "static/day/${date}.json"; \
-    echo "Generated static/day/${date}.json"; \
-  done
+  cd .. && cargo run -- --regenerate

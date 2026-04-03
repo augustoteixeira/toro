@@ -6,7 +6,7 @@ use rocket::http::{ContentType, Status};
 use rocket::serde::json::Json;
 use server::{
     Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, generate_day_json,
-    insert_reading, migrate,
+    get_all_dates, insert_reading, migrate,
 };
 
 #[rocket::get("/")]
@@ -167,6 +167,16 @@ async fn main() -> Result<(), rocket::Error> {
 
     let db = Db::fetch(&rocket).expect("Database not initialized");
     ensure_token(db).await.expect("Failed to ensure API token");
+
+    if std::env::args().any(|a| a == "--regenerate") {
+        let dates = get_all_dates(db).await.expect("Failed to get dates");
+        println!("Regenerating {} day files...", dates.len());
+        for date in &dates {
+            generate_day_json(db, date).await.expect("Failed to generate JSON");
+        }
+        println!("Done.");
+        return Ok(());
+    }
 
     rocket.launch().await?;
 
