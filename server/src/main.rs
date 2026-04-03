@@ -6,7 +6,7 @@ use rocket::http::{ContentType, Status};
 use rocket::serde::json::Json;
 use server::{
     Db, RateLimiter, Reading, TokenAuthenticated, ensure_token, generate_day_json,
-    get_all_dates, insert_reading, migrate,
+    generate_week_json, get_all_dates, get_all_weeks, insert_reading, migrate, monday_of,
 };
 
 #[rocket::get("/")]
@@ -37,6 +37,7 @@ async fn post_reading(
     match insert_reading(&db.0, &reading).await {
         Ok(_) => {
             let _ = generate_day_json(&db.0, &date).await;
+            let _ = generate_week_json(&db.0, &monday_of(&reading.hour)).await;
             Status::Created
         }
         Err(_) => Status::UnprocessableEntity,
@@ -172,8 +173,15 @@ async fn main() -> Result<(), rocket::Error> {
         let dates = get_all_dates(db).await.expect("Failed to get dates");
         println!("Regenerating {} day files...", dates.len());
         for date in &dates {
-            generate_day_json(db, date).await.expect("Failed to generate JSON");
+            generate_day_json(db, date).await.expect("Failed to generate day JSON");
         }
+
+        let weeks = get_all_weeks(db).await.expect("Failed to get weeks");
+        println!("Regenerating {} week files...", weeks.len());
+        for monday in &weeks {
+            generate_week_json(db, monday).await.expect("Failed to generate week JSON");
+        }
+
         println!("Done.");
         return Ok(());
     }

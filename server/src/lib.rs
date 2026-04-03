@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use rand::RngCore;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome};
@@ -318,6 +318,31 @@ pub async fn get_all_dates(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx:
     sqlx::query_scalar("SELECT DISTINCT substr(hour, 1, 10) FROM hourly_readings ORDER BY 1")
         .fetch_all(pool)
         .await
+}
+
+/// Returns distinct Monday dates for all weeks that have at least one reading.
+pub async fn get_all_weeks(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    let dates: Vec<String> = get_all_dates(pool).await?;
+    let mut mondays: Vec<String> = dates
+        .iter()
+        .filter_map(|d| {
+            let date = NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()?;
+            let weekday = date.weekday().num_days_from_monday(); // 0=Mon
+            let monday = date - chrono::Duration::days(weekday as i64);
+            Some(monday.format("%Y-%m-%d").to_string())
+        })
+        .collect();
+    mondays.dedup();
+    Ok(mondays)
+}
+
+/// Given a reading's hour string, compute the Monday of its week.
+pub fn monday_of(hour: &str) -> String {
+    let date = NaiveDate::parse_from_str(&hour[..10], "%Y-%m-%d")
+        .expect("invalid date in hour string");
+    let weekday = date.weekday().num_days_from_monday();
+    let monday = date - chrono::Duration::days(weekday as i64);
+    monday.format("%Y-%m-%d").to_string()
 }
 
 pub async fn generate_day_json(pool: &sqlx::SqlitePool, date: &str) -> Result<(), String> {
