@@ -1,6 +1,6 @@
 mod common;
 
-use server::{Reading, get_readings_for_day, insert_reading};
+use server::{Reading, generate_day_json, get_readings_for_day, insert_reading};
 
 #[tokio::test]
 async fn get_readings_for_day_returns_matching_rows() {
@@ -47,6 +47,32 @@ async fn get_readings_for_day_returns_matching_rows() {
     let day16 = get_readings_for_day(&pool, "2026-03-16").await.unwrap();
     assert_eq!(day16.len(), 1);
     assert_eq!(day16[0].hour, "2026-03-16T08");
+}
+
+#[tokio::test]
+async fn generate_day_json_writes_valid_json() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    let r = Reading {
+        hour: "2026-03-15T10".to_string(),
+        temperature: Some(25.0),
+        humidity: Some(60.0),
+        wind_speed: Some(8.0),
+        wind_direction: Some(120.0),
+        luminosity: Some(700.0),
+        rainfall: Some(0.0),
+    };
+    insert_reading(&pool, &r).await.unwrap();
+
+    generate_day_json(&pool, "2026-03-15").await.expect("generate failed");
+
+    let path = "data/static/day/2026-03-15.json";
+    let contents = std::fs::read_to_string(path).expect("file not found");
+    assert!(contents.contains("2026-03-15T10"));
+    assert!(contents.contains("25.0"));
+
+    std::fs::remove_file(path).ok();
 }
 
 #[tokio::test]

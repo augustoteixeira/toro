@@ -137,6 +137,23 @@ pub async fn get_readings_for_day(
     .await
 }
 
+pub async fn generate_day_json(pool: &sqlx::SqlitePool, date: &str) -> Result<(), String> {
+    let readings = get_readings_for_day(pool, date)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let json = rocket::serde::json::serde_json::to_string(&readings)
+        .map_err(|e| e.to_string())?;
+
+    std::fs::create_dir_all("data/static/day")
+        .map_err(|e| e.to_string())?;
+
+    std::fs::write(format!("data/static/day/{}.json", date), json)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 pub struct TokenAuthenticated;
 
 #[rocket::async_trait]
