@@ -1,8 +1,8 @@
 mod common;
 
 use server::{
-    Reading, aggregate_month, aggregate_semester, aggregate_week,
-    generate_month_json, generate_semester_json, generate_week_json,
+    Reading, aggregate_month, aggregate_semester, aggregate_triennium, aggregate_week,
+    generate_month_json, generate_semester_json, generate_triennium_json, generate_week_json,
     get_readings_for_week, insert_reading,
 };
 
@@ -252,14 +252,73 @@ async fn generate_week_json_writes_valid_file() {
     std::fs::remove_file(path).ok();
 }
 
-// --- Semester tests ---
+// --- Triennium tests ---
 
 #[test]
-fn aggregate_semester_produces_26_buckets() {
-    // 2025-01-06 is a Monday
-    let buckets = aggregate_semester("2025-01-06", &[]);
-    assert_eq!(buckets.len(), 26);
+fn aggregate_triennium_produces_36_buckets() {
+    let buckets = aggregate_triennium("2023-06-01", &[]);
+    assert_eq!(buckets.len(), 36);
 }
+
+#[test]
+fn aggregate_triennium_labels_are_year_months() {
+    let buckets = aggregate_triennium("2023-06-01", &[]);
+    assert_eq!(buckets[0].label, "2023-06");
+    assert_eq!(buckets[1].label, "2023-07");
+    assert_eq!(buckets[6].label, "2023-12");
+    assert_eq!(buckets[7].label, "2024-01");
+    assert_eq!(buckets[35].label, "2026-05");
+}
+
+#[test]
+fn aggregate_triennium_buckets_readings_by_month() {
+    let readings = vec![
+        reading("2023-06-10T08", 20.0),
+        reading("2023-06-20T14", 22.0),  // same month (index 0)
+        reading("2024-01-15T10", 30.0),  // index 7
+    ];
+    let buckets = aggregate_triennium("2023-06-01", &readings);
+
+    assert_eq!(buckets[0].temperature_mean, Some(21.0));
+    assert_eq!(buckets[7].temperature_mean, Some(30.0));
+    assert!(buckets[1].temperature_mean.is_none());
+}
+
+#[test]
+fn aggregate_triennium_ignores_readings_outside_range() {
+    let readings = vec![
+        reading("2023-05-31T10", 99.0),  // month before start
+        reading("2023-06-01T10", 25.0),  // first month (in range)
+        reading("2026-06-01T10", 99.0),  // after 36 months
+    ];
+    let buckets = aggregate_triennium("2023-06-01", &readings);
+
+    assert_eq!(buckets[0].temperature_mean, Some(25.0));
+    for i in 1..36 {
+        assert!(buckets[i].temperature_mean.is_none());
+    }
+}
+
+#[tokio::test]
+async fn generate_triennium_json_writes_valid_file() {
+    let pool = common::test_pool().await;
+    server::migrate(&pool).await.expect("migration failed");
+
+    insert_reading(&pool, &reading("2023-06-10T10", 25.0)).await.unwrap();
+    insert_reading(&pool, &reading("2025-01-15T14", 32.0)).await.unwrap();
+
+    generate_triennium_json(&pool, "2023-06-01").await.expect("generate failed");
+
+    let path = "data/static/triennium/2023-06-01.json";
+    let contents = std::fs::read_to_string(path).expect("file not found");
+    assert!(contents.contains("2023-06"));
+    assert!(contents.contains("2025-01"));
+    assert!(contents.contains("25.0"));
+    assert!(contents.contains("32.0"));
+
+    std::fs::remove_file(path).ok();
+}
+
 
 #[test]
 fn aggregate_semester_labels_are_week_mondays() {

@@ -582,6 +582,143 @@ pub fn semester_start_of(hour: &str) -> String {
     start.format("%Y-%m-%d").to_string()
 }
 
+const TRIENNIUM_MONTHS: usize = 36;
+
+pub async fn get_readings_for_triennium(
+    pool: &sqlx::SqlitePool,
+    start: &str,
+) -> Result<Vec<Reading>, sqlx::Error> {
+    // start is "YYYY-MM-01"
+    let start_year: i32 = start[..4].parse().expect("invalid year");
+    let start_mo: u32 = start[5..7].parse().expect("invalid month");
+    // Compute end: start + 36 months - 1 day
+    let total_months = start_mo as i32 - 1 + TRIENNIUM_MONTHS as i32;
+    let end_year = start_year + total_months / 12;
+    let end_mo = (total_months % 12 + 1) as u32;
+    // Last day of the month before end
+    let end_date = NaiveDate::from_ymd_opt(
+        if end_mo == 1 { end_year - 1 } else { end_year },
+        if end_mo == 1 { 12 } else { end_mo - 1 },
+        1,
+    )
+    .unwrap();
+    let days_in_end_month = NaiveDate::from_ymd_opt(end_year, end_mo, 1)
+        .unwrap()
+        .signed_duration_since(end_date)
+        .num_days() as u32;
+    let end_day = days_in_end_month;
+    let end_str = format!(
+        "{}-{:02}-{:02}T23",
+        end_date.year(), end_date.month(), end_day
+    );
+    let start_str = format!("{}T00", start);
+    sqlx::query_as::<_, Reading>(
+        "SELECT hour, temperature, humidity, wind_speed, wind_direction, luminosity, rainfall
+         FROM hourly_readings WHERE hour >= ? AND hour <= ? ORDER BY hour",
+    )
+    .bind(&start_str)
+    .bind(&end_str)
+    .fetch_all(pool)
+    .await
+}
+
+pub fn aggregate_triennium(start: &str, readings: &[Reading]) -> Vec<AggregatedBucket> {
+    let start_year: i32 = start[..4].parse().expect("invalid year");
+    let start_mo: u32 = start[5..7].parse().expect("invalid month");
+
+    let mut buckets: Vec<BucketCollector> =
+        (0..TRIENNIUM_MONTHS).map(|_| BucketCollector::new()).collect();
+
+    for r in readings {
+        let year: i32 = r.hour[..4].parse().unwrap();
+        let mo: u32 = r.hour[5..7].parse().unwrap();
+        let month_offset = (year - start_year) * 12 + mo as i32 - start_mo as i32;
+        if month_offset >= 0 && (month_offset as usize) < TRIENNIUM_MONTHS {
+            let b = &mut buckets[month_offset as usize];
+            if let Some(v) = r.temperature { b.temperature.push(v); }
+            if let Some(v) = r.humidity { b.humidity.push(v); }
+            if let Some(v) = r.wind_speed { b.wind_speed.push(v); }
+            if let (Some(s), Some(d)) = (r.wind_speed, r.wind_direction) {
+                b.wind_speed_for_dir.push(s);
+                b.wind_direction.push(d);
+            }
+            if let Some(v) = r.luminosity { b.luminosity.push(v); }
+            if let Some(v) = r.rainfall { b.rainfall.push(v); }
+        }
+    }
+
+    (0..TRIENNIUM_MONTHS)
+        .map(|i| {
+            let total_mo = start_mo as i32 - 1 + i as i32;
+            let year = start_year + total_mo / 12;
+            let mo = (total_mo % 12 + 1) as u32;
+            let label = format!("{}-{:02}", year, mo);
+            collector_to_bucket(label, &buckets[i])
+        })
+        .collect()
+}
+
+pub async fn generate_triennium_json(
+    pool: &sqlx::SqlitePool,
+    start: &str,
+) -> Result<(), String> {
+    let readings = get_readings_for_triennium(pool, start)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let buckets = aggregate_triennium(start, &readings);
+
+    let json = rocket::serde::json::serde_json::to_string(&buckets)
+        .map_err(|e| e.to_string())?;
+
+    std::fs::create_dir_all("data/static/triennium")
+        .map_err(|e| e.to_string())?;
+
+    std::fs::write(format!("data/static/triennium/{}.json", start), json)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub async fn get_all_triennia(pool: &sqlx::SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    let dates: Vec<String> = get_all_dates(pool).await?;
+    if dates.is_empty() {
+        return Ok(vec![]);
+    }
+    let first = NaiveDate::parse_from_str(&dates[0], "%Y-%m-%d").unwrap();
+    let last = NaiveDate::parse_from_str(dates.last().unwrap(), "%Y-%m-%d").unwrap();
+
+    let mut triennia = vec![];
+    let mut year = first.year();
+    let mut mo = first.month();
+    // Snap to first of month
+    loop {
+        let start = NaiveDate::from_ymd_opt(year, mo, 1).unwrap();
+        triennia.push(start.format("%Y-%m-%d").to_string());
+        // Advance 36 months
+        let total = mo as i32 - 1 + TRIENNIUM_MONTHS as i32;
+        year += total / 12;
+        mo = (total % 12 + 1) as u32;
+        if NaiveDate::from_ymd_opt(year, mo, 1).unwrap() > last {
+            break;
+        }
+    }
+    Ok(triennia)
+}
+
+/// Given a reading's hour string, return the triennium start ("YYYY-MM-01") it belongs to.
+pub fn triennium_start_of(hour: &str) -> String {
+    let year: i32 = hour[..4].parse().expect("invalid year");
+    let mo: u32 = hour[5..7].parse().expect("invalid month");
+    // Months since epoch start (1970-01)
+    let months_since_epoch = (year - 1970) * 12 + mo as i32 - 1;
+    let tri_index = months_since_epoch.div_euclid(TRIENNIUM_MONTHS as i32);
+    let start_months = tri_index * TRIENNIUM_MONTHS as i32;
+    let start_year = 1970 + start_months / 12;
+    let start_mo = (start_months % 12 + 1) as u32;
+    format!("{}-{:02}-01", start_year, start_mo)
+}
+
 pub struct TokenAuthenticated;
 
 #[rocket::async_trait]

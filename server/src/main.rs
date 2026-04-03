@@ -6,9 +6,10 @@ use rocket::http::{ContentType, Status};
 use rocket::serde::json::Json;
 use server::{
     Db, RateLimiter, Reading, TokenAuthenticated, ensure_token,
-    generate_day_json, generate_month_json, generate_semester_json, generate_week_json,
-    get_all_dates, get_all_months, get_all_semesters, get_all_weeks,
-    insert_reading, migrate, monday_of, month_of, semester_start_of,
+    generate_day_json, generate_month_json, generate_semester_json, generate_triennium_json,
+    generate_week_json,
+    get_all_dates, get_all_months, get_all_semesters, get_all_triennia, get_all_weeks,
+    insert_reading, migrate, monday_of, month_of, semester_start_of, triennium_start_of,
 };
 
 #[rocket::get("/")]
@@ -42,6 +43,7 @@ async fn post_reading(
             let _ = generate_week_json(&db.0, &monday_of(&reading.hour)).await;
             let _ = generate_month_json(&db.0, &month_of(&reading.hour)).await;
             let _ = generate_semester_json(&db.0, &semester_start_of(&reading.hour)).await;
+            let _ = generate_triennium_json(&db.0, &triennium_start_of(&reading.hour)).await;
             Status::Created
         }
         Err(_) => Status::UnprocessableEntity,
@@ -584,6 +586,146 @@ async fn semester(
     (Status::Ok, (ContentType::HTML, page))
 }
 
+#[rocket::get("/api/triennium/<start>")]
+async fn api_triennium(start: &str) -> Result<(ContentType, String), Status> {
+    let path = format!("data/static/triennium/{}.json", start);
+    std::fs::read_to_string(&path)
+        .map(|contents| (ContentType::JSON, contents))
+        .map_err(|_| Status::NotFound)
+}
+
+#[rocket::get("/triennium/<start>")]
+async fn triennium(
+    limiter: &rocket::State<RateLimiter>,
+    ip: IpAddr,
+    start: &str,
+) -> (Status, (ContentType, String)) {
+    if limiter.too_many_attempts(ip, 20, Duration::from_secs(60)) {
+        return (Status::TooManyRequests, (ContentType::HTML, "Too many requests".to_string()));
+    }
+    let page = format!(r##"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Toro — Triennium {start}</title>
+  <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/js/uikit.min.js"></script>
+</head>
+<body>
+  <div class="uk-container uk-margin-top">
+    <h1 class="uk-heading-small">Triennium from {start}</h1>
+    <ul uk-tab>
+      <li class="uk-active"><a href="#">Temperature</a></li>
+      <li><a href="#">Humidity</a></li>
+      <li><a href="#">Wind Speed</a></li>
+      <li><a href="#">Wind Direction</a></li>
+      <li><a href="#">Luminosity</a></li>
+      <li><a href="#">Rainfall</a></li>
+    </ul>
+    <ul class="uk-switcher uk-margin">
+      <li><div id="chart-temperature"></div></li>
+      <li><div id="chart-humidity"></div></li>
+      <li><div id="chart-wind_speed"></div></li>
+      <li><div id="chart-wind_direction"></div></li>
+      <li><div id="chart-luminosity"></div></li>
+      <li><div id="chart-rainfall"></div></li>
+    </ul>
+  </div>
+  <script>
+    var errorBarMetrics = [
+      {{ field: "temperature", title: "Temperature (\u00b0C)" }},
+      {{ field: "humidity", title: "Humidity (%)" }},
+      {{ field: "wind_speed", title: "Wind Speed (km/h)" }},
+      {{ field: "luminosity", title: "Luminosity (lux)" }}
+    ];
+
+    fetch("/api/triennium/{start}")
+      .then(function(r) {{ return r.json(); }})
+      .then(function(data) {{
+        errorBarMetrics.forEach(function(m) {{
+          var transformed = data.map(function(d) {{
+            return {{
+              label: d.label,
+              mean: d[m.field + "_mean"],
+              lo: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+                ? d[m.field + "_mean"] - d[m.field + "_std"] : null,
+              hi: d[m.field + "_mean"] !== null && d[m.field + "_std"] !== null
+                ? d[m.field + "_mean"] + d[m.field + "_std"] : null
+            }};
+          }});
+          vegaEmbed('#chart-' + m.field, {{
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "width": 700, "height": 300,
+            "data": {{ "values": transformed }},
+            "encoding": {{
+              "x": {{ "field": "label", "type": "ordinal", "title": "Month",
+                       "axis": {{ "labelAngle": -45 }} }}
+            }},
+            "layer": [
+              {{
+                "mark": {{ "type": "line", "tooltip": true }},
+                "encoding": {{ "y": {{ "field": "mean", "type": "quantitative", "title": m.title }} }}
+              }},
+              {{
+                "mark": {{ "type": "errorbar" }},
+                "encoding": {{
+                  "y": {{ "field": "lo", "type": "quantitative", "title": m.title }},
+                  "y2": {{ "field": "hi" }}
+                }}
+              }}
+            ]
+          }}, {{ "actions": false }});
+        }});
+
+        vegaEmbed('#chart-wind_direction', {{
+          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+          "width": 700, "height": 300,
+          "data": {{ "values": data.map(function(d) {{
+            return {{ label: d.label, direction: d.wind_direction_mean }};
+          }}) }},
+          "mark": {{ "type": "line", "tooltip": true, "point": true }},
+          "encoding": {{
+            "x": {{ "field": "label", "type": "ordinal", "title": "Month",
+                     "axis": {{ "labelAngle": -45 }} }},
+            "y": {{ "field": "direction", "type": "quantitative",
+                     "title": "Wind Direction (\u00b0)", "scale": {{ "domain": [0, 360] }} }}
+          }}
+        }}, {{ "actions": false }});
+
+        vegaEmbed('#chart-rainfall', {{
+          "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+          "width": 700, "height": 300,
+          "data": {{ "values": data.map(function(d) {{
+            return {{ label: d.label, sum: d.rainfall_sum, max: d.rainfall_max }};
+          }}) }},
+          "encoding": {{
+            "x": {{ "field": "label", "type": "ordinal", "title": "Month",
+                     "axis": {{ "labelAngle": -45 }} }}
+          }},
+          "layer": [
+            {{
+              "mark": {{ "type": "bar", "tooltip": true }},
+              "encoding": {{ "y": {{ "field": "sum", "type": "quantitative", "title": "Rainfall (mm)" }} }}
+            }},
+            {{
+              "mark": {{ "type": "point", "color": "red", "tooltip": true }},
+              "encoding": {{ "y": {{ "field": "max", "type": "quantitative" }} }}
+            }}
+          ]
+        }}, {{ "actions": false }});
+      }})
+      .catch(function(err) {{
+        document.getElementById('chart-temperature').textContent = 'Error: ' + err;
+      }});
+  </script>
+</body>
+</html>"##);
+    (Status::Ok, (ContentType::HTML, page))
+}
+
 #[rocket::main]
 async fn main() -> Result<(), rocket::Error> {
     use rocket_db_pools::Database;
@@ -608,7 +750,7 @@ async fn main() -> Result<(), rocket::Error> {
                 }
             }
         }))
-        .mount("/", rocket::routes![index, post_reading, day, api_day, week, api_week, month, api_month, semester, api_semester])
+        .mount("/", rocket::routes![index, post_reading, day, api_day, week, api_week, month, api_month, semester, api_semester, triennium, api_triennium])
         .ignite()
         .await?;
 
@@ -638,6 +780,12 @@ async fn main() -> Result<(), rocket::Error> {
         println!("Regenerating {} semester files...", semesters.len());
         for sem in &semesters {
             generate_semester_json(db, sem).await.expect("Failed to generate semester JSON");
+        }
+
+        let triennia = get_all_triennia(db).await.expect("Failed to get triennia");
+        println!("Regenerating {} triennium files...", triennia.len());
+        for tri in &triennia {
+            generate_triennium_json(db, tri).await.expect("Failed to generate triennium JSON");
         }
 
         println!("Done.");
