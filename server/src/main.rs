@@ -33,7 +33,7 @@ async fn index(db: &rocket::State<Db>) -> maud::Markup {
         html {
             head {
                 meta charset="utf-8";
-                title { "Toro" }
+                title { "Toró" }
                 link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.21.6/dist/css/uikit.min.css";
             }
             body {
