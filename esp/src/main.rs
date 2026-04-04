@@ -130,6 +130,30 @@ fn main() {
 
     wifi.start().unwrap();
 
+    // Scan and log all visible networks.
+    log::info!("Scanning for Wi-Fi networks...");
+    let aps = wifi.wifi_mut().scan().unwrap();
+    log::info!("Found {} networks:", aps.len());
+    for ap in &aps {
+        log::info!(
+            "  SSID: {:?}  RSSI: {} dBm  Auth: {:?}  Channel: {}",
+            ap.ssid,
+            ap.signal_strength,
+            ap.auth_method,
+            ap.channel
+        );
+    }
+
+    wifi.set_configuration(&Configuration::Client(ClientConfiguration {
+        ssid: WIFI_SSID.try_into().unwrap(),
+        password: WIFI_PASSWORD.try_into().unwrap(),
+        auth_method: AuthMethod::WPA2Personal,
+        ..Default::default()
+    }))
+    .unwrap();
+    wifi.stop().unwrap();
+    wifi.start().unwrap();
+
     // Retry connect — the AP may take a moment to become visible.
     let mut connected = false;
     for attempt in 1..=5 {
