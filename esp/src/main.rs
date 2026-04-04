@@ -5,6 +5,7 @@ use esp_idf_svc::{
     hal::peripherals::Peripherals,
     http::client::{Configuration as HttpConfig, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
+    tls::X509,
     wifi::{
         AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
     },
@@ -12,6 +13,11 @@ use esp_idf_svc::{
 
 const WIFI_SSID: &str = env!("CFG_TORO_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("CFG_TORO_WIFI_PASSWORD");
+const SERVER_URL: &str = env!("CFG_TORO_SERVER_URL");
+
+// ISRG Root X1 — the Let's Encrypt root CA. NUL-terminated for mbedTLS.
+const CA_CERT: X509<'static> =
+    X509::pem_until_nul(include_bytes!("../certs/isrg-root-x1.pem"));
 
 fn main() {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
@@ -50,12 +56,17 @@ fn main() {
     let ip = wifi.wifi().sta_netif().get_ip_info().unwrap();
     log::info!("IP address: {}", ip.ip);
 
-    // HTTP GET example.com
+    // HTTPS GET with pinned ISRG Root X1 (Let's Encrypt root CA)
     let mut client = HttpClient::wrap(
-        EspHttpConnection::new(&HttpConfig::default()).unwrap(),
+        EspHttpConnection::new(&HttpConfig {
+            server_certificate: Some(CA_CERT),
+            ..Default::default()
+        })
+        .unwrap(),
     );
-    let request = client.get("http://example.com").unwrap();
-    log::info!("-> GET http://example.com");
+
+    log::info!("-> GET {}", SERVER_URL);
+    let request = client.get(SERVER_URL).unwrap();
     let mut response = request.submit().unwrap();
 
     let status = response.status();

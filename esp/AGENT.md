@@ -2,7 +2,7 @@
 
 ## Credentials
 
-WiFi credentials are stored in `esp/cfg.toml` (gitignored). Copy the example and fill in your values:
+Runtime config is stored in `esp/cfg.toml` (gitignored). Copy the example and fill in your values:
 
 ```bash
 cp cfg.toml.example cfg.toml
@@ -10,8 +10,14 @@ cp cfg.toml.example cfg.toml
 ```
 
 `build.rs` reads `cfg.toml`, parses the `[toro]` table, and emits each key as a
-`cargo:rustc-env=CFG_TORO_<KEY>=<value>` directive. Access them in Rust with
-`env!("CFG_TORO_WIFI_SSID")` and `env!("CFG_TORO_WIFI_PASSWORD")`.
+`cargo:rustc-env=CFG_TORO_<KEY>=<value>` directive. Access them in Rust with `env!("CFG_TORO_<KEY>")`.
+
+Current keys:
+- `wifi_ssid` → `CFG_TORO_WIFI_SSID`
+- `wifi_password` → `CFG_TORO_WIFI_PASSWORD`
+- `server_url` → `CFG_TORO_SERVER_URL`
+
+New keys are picked up automatically — no changes to `build.rs` needed.
 
 ## Environment
 
@@ -59,6 +65,32 @@ work (NVS init, PHY calibration, etc.).
 
 See `esp/run_until.sh` for full usage.
 
+## TLS
+
+HTTPS requests use verified TLS via mbedTLS (built into ESP-IDF). The trust anchor is the ISRG
+Root X1 certificate, embedded at compile time from `certs/isrg-root-x1.pem`:
+
+```rust
+const CA_CERT: X509<'static> =
+    X509::pem_until_nul(include_bytes!("../certs/isrg-root-x1.pem"));
+```
+
+The file **must** end with a NUL byte — mbedTLS requires it for PEM input. The file in the repo
+already has this; if you ever refresh it:
+
+```bash
+curl https://letsencrypt.org/certs/isrgrootx1.pem -o certs/isrg-root-x1.pem
+printf '\0' >> certs/isrg-root-x1.pem
+```
+
+`server_certificate: Some(CA_CERT)` in `HttpConfig` pins this CA as the sole trust anchor.
+No other CA (including the built-in Mozilla bundle) is trusted for connections made with this
+client. This is intentional — it means only servers with a Let's Encrypt certificate will be
+accepted.
+
+To use a self-signed CA instead: generate a CA with `openssl`, replace `certs/isrg-root-x1.pem`
+with your CA cert (NUL-terminated), and update the `const` name for clarity.
+
 ## cfg.toml format
 
 Keys must be plain TOML strings. A stray trailing quote or other syntax error will cause `build.rs`
@@ -68,4 +100,5 @@ to panic with a clear message at compile time. Keep the file minimal:
 [toro]
 wifi_ssid = "your_ssid"
 wifi_password = "your_password"
+server_url = "https://your-server.example.com/"
 ```

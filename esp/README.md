@@ -25,22 +25,38 @@ Log out and back in for the group change to take effect.
 
 ## Configuration
 
-Before building or flashing, copy the example config and fill in your Wi-Fi credentials:
+Before building or flashing, copy the example config and fill in your values:
 
 ```bash
 cp cfg.toml.example cfg.toml
 ```
 
-Then edit `cfg.toml` with your values:
+Then edit `cfg.toml`:
 
 ```toml
 [toro]
 wifi_ssid = "your_ssid_here"
 wifi_password = "your_password_here"
+server_url = "https://your-server.example.com/"
 ```
 
-`cfg.toml` is gitignored and must be present for the build to succeed. The values are read by
-`build.rs` and injected as compile-time env vars (`CFG_TORO_WIFI_SSID`, `CFG_TORO_WIFI_PASSWORD`).
+`cfg.toml` is gitignored and must be present for the build to succeed. All keys under `[toro]`
+are read by `build.rs` and injected as compile-time env vars (`CFG_TORO_WIFI_SSID`, etc.).
+
+## TLS
+
+The firmware makes HTTPS requests with verified TLS. The server must have a certificate issued by
+Let's Encrypt. The ISRG Root X1 certificate (Let's Encrypt's root CA) is embedded at compile time
+from `certs/isrg-root-x1.pem` and passed to mbedTLS as the sole trust anchor — no other CA is
+trusted.
+
+To update the pinned certificate (e.g. when ISRG Root X1 is rotated, which is not expected before
+2035):
+
+```bash
+curl https://letsencrypt.org/certs/isrgrootx1.pem -o certs/isrg-root-x1.pem
+printf '\0' >> certs/isrg-root-x1.pem   # NUL terminator required by mbedTLS
+```
 
 ## Build
 
