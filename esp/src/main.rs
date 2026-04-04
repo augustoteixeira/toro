@@ -2,7 +2,12 @@ use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::utils::io;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::peripherals::Peripherals,
+    hal::{
+        delay::FreeRtos,
+        i2c::{I2cConfig, I2cDriver},
+        peripherals::Peripherals,
+        units::Hertz,
+    },
     http::client::{Configuration as HttpConfig, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
     tls::X509,
@@ -10,6 +15,7 @@ use esp_idf_svc::{
         AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
     },
 };
+use i2c_character_display::{CharacterDisplayPCF8574T, LcdDisplayType};
 
 const WIFI_SSID: &str = env!("CFG_TORO_WIFI_SSID");
 const WIFI_PASSWORD: &str = env!("CFG_TORO_WIFI_PASSWORD");
@@ -20,17 +26,32 @@ const CA_CERT: X509<'static> =
     X509::pem_until_nul(include_bytes!("../certs/isrg-root-x1.pem"));
 
 fn main() {
-    // It is necessary to call this function once. Otherwise, some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
-
-    // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().unwrap();
     let sysloop = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
+    // --- LCD via I2C ---
+    let sda = peripherals.pins.gpio2;
+    let scl = peripherals.pins.gpio3;
+    let i2c_config = I2cConfig::new().baudrate(Hertz(100_000));
+    let i2c = I2cDriver::new(peripherals.i2c0, sda, scl, &i2c_config).unwrap();
+
+    let mut lcd =
+        CharacterDisplayPCF8574T::new(i2c, LcdDisplayType::Lcd16x2, FreeRtos);
+    lcd.init().map_err(|_| "LCD init failed").unwrap();
+    lcd.set_cursor(0, 0)
+        .map_err(|_| "LCD set_cursor failed")
+        .unwrap();
+    lcd.print("Hello, Toro!")
+        .map_err(|_| "LCD print failed")
+        .unwrap();
+
+    log::info!("LCD initialised");
+
+    // --- Wi-Fi ---
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs)).unwrap(),
         sysloop,
@@ -56,7 +77,7 @@ fn main() {
     let ip = wifi.wifi().sta_netif().get_ip_info().unwrap();
     log::info!("IP address: {}", ip.ip);
 
-    // HTTPS GET with pinned ISRG Root X1 (Let's Encrypt root CA)
+    // --- HTTPS GET ---
     let mut client = HttpClient::wrap(
         EspHttpConnection::new(&HttpConfig {
             server_certificate: Some(CA_CERT),
@@ -84,7 +105,6 @@ fn main() {
 
     log::info!("BOOT_OK");
 
-    // Keep the task (and wifi) alive so the IP lease is not dropped
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
