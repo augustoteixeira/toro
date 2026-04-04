@@ -25,6 +25,20 @@ const SERVER_URL: &str = env!("CFG_TORO_SERVER_URL");
 const CA_CERT: X509<'static> =
     X509::pem_until_nul(include_bytes!("../certs/isrg-root-x1.pem"));
 
+type Lcd<'d> = CharacterDisplayPCF8574T<I2cDriver<'d>, FreeRtos>;
+
+/// Write a two-line status to the LCD. Row 0 is a short label, row 1 is a value.
+/// Both lines are padded with spaces to 16 chars to erase any previous content.
+fn lcd_status(lcd: &mut Lcd<'_>, label: &str, value: &str) {
+    // Format each line to exactly 16 chars so stale characters are overwritten.
+    let label = format!("{:<16}", &label[..label.len().min(16)]);
+    let value = format!("{:<16}", &value[..value.len().min(16)]);
+    lcd.set_cursor(0, 0).map_err(|_| ()).unwrap();
+    lcd.print(&label).map_err(|_| ()).unwrap();
+    lcd.set_cursor(0, 1).map_err(|_| ()).unwrap();
+    lcd.print(&value).map_err(|_| ()).unwrap();
+}
+
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -42,16 +56,11 @@ fn main() {
     let mut lcd =
         CharacterDisplayPCF8574T::new(i2c, LcdDisplayType::Lcd16x2, FreeRtos);
     lcd.init().map_err(|_| "LCD init failed").unwrap();
-    lcd.set_cursor(0, 0)
-        .map_err(|_| "LCD set_cursor failed")
-        .unwrap();
-    lcd.print("Hello, Toro!")
-        .map_err(|_| "LCD print failed")
-        .unwrap();
-
     log::info!("LCD initialised");
 
     // --- Wi-Fi ---
+    lcd_status(&mut lcd, "Wi-Fi", "Connecting...");
+
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs)).unwrap(),
         sysloop,
@@ -67,15 +76,16 @@ fn main() {
     .unwrap();
 
     wifi.start().unwrap();
-    log::info!("Wi-Fi started, connecting to '{}'…", WIFI_SSID);
-
     wifi.connect().unwrap();
-    log::info!("Connected, waiting for IP…");
+    log::info!("Wi-Fi connected, waiting for IP…");
 
+    lcd_status(&mut lcd, "Wi-Fi", "Getting IP...");
     wifi.wait_netif_up().unwrap();
 
     let ip = wifi.wifi().sta_netif().get_ip_info().unwrap();
-    log::info!("IP address: {}", ip.ip);
+    let ip_str = ip.ip.to_string();
+    log::info!("IP address: {}", ip_str);
+    lcd_status(&mut lcd, "IP:", &ip_str);
 
     // --- HTTPS GET ---
     let mut client = HttpClient::wrap(
@@ -86,12 +96,20 @@ fn main() {
         .unwrap(),
     );
 
+    // Show only the host part of the URL so it fits on 16 chars.
+    let host = SERVER_URL
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    lcd_status(&mut lcd, "GET", host);
     log::info!("-> GET {}", SERVER_URL);
+
     let request = client.get(SERVER_URL).unwrap();
     let mut response = request.submit().unwrap();
 
     let status = response.status();
     log::info!("<- {}", status);
+    lcd_status(&mut lcd, "HTTP", &status.to_string());
 
     let mut buf = [0u8; 1024];
     let bytes_read = io::try_read_full(&mut response, &mut buf)
@@ -103,6 +121,7 @@ fn main() {
         std::str::from_utf8(&buf[..bytes_read]).unwrap_or("<invalid utf8>")
     );
 
+    lcd_status(&mut lcd, "OK", &ip_str);
     log::info!("BOOT_OK");
 
     loop {
