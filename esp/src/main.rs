@@ -1,9 +1,11 @@
+use dht_embedded::{Dht22, DhtSensor, NoopInterruptControl};
 use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::utils::io;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        delay::FreeRtos,
+        delay::{Ets, FreeRtos},
+        gpio::{PinDriver, Pull},
         i2c::{I2cConfig, I2cDriver},
         peripherals::Peripherals,
         units::Hertz,
@@ -30,7 +32,6 @@ type Lcd<'d> = CharacterDisplayPCF8574T<I2cDriver<'d>, FreeRtos>;
 /// Write a two-line status to the LCD. Row 0 is a short label, row 1 is a value.
 /// Both lines are padded with spaces to 16 chars to erase any previous content.
 fn lcd_status(lcd: &mut Lcd<'_>, label: &str, value: &str) {
-    // Format each line to exactly 16 chars so stale characters are overwritten.
     let label = format!("{:<16}", &label[..label.len().min(16)]);
     let value = format!("{:<16}", &value[..value.len().min(16)]);
     lcd.set_cursor(0, 0).map_err(|_| ()).unwrap();
@@ -58,6 +59,58 @@ fn main() {
     lcd.init().map_err(|_| "LCD init failed").unwrap();
     log::info!("LCD initialised");
 
+    // --- DHT22 on GPIO10 ---
+    lcd_status(&mut lcd, "DHT22", "Reading...");
+
+    // Open-drain mode: the pin can be driven low by us or the sensor, and the
+    // external 4.7 kΩ pull-up brings it high when neither is pulling it down.
+    let mut dht_pin =
+        PinDriver::input_output_od(peripherals.pins.gpio10, Pull::Floating)
+            .unwrap();
+    dht_pin.set_high().unwrap();
+
+    // Sanity check: with the external pull-up the idle line must read high.
+    // If it reads low the pull-up resistor is missing or wired incorrectly.
+    FreeRtos::delay_ms(10);
+    if !dht_pin.is_high() {
+        log::error!(
+            "DHT22 GPIO10 reads LOW at idle — check pull-up resistor wiring"
+        );
+    }
+
+    // Ets uses a busy-wait spin loop accurate to 1 µs — required for DHT22's
+    // tight timing. FreeRtos has only 1 ms tick resolution and corrupts the protocol.
+    let mut sensor = Dht22::new(NoopInterruptControl, Ets, dht_pin);
+
+    // DHT22 needs ~1 s after power-on before the first read is valid.
+    FreeRtos::delay_ms(1500);
+
+    for i in 1..=5 {
+        match sensor.read() {
+            Ok(reading) => {
+                log::info!(
+                    "DHT22 [{i}/5]: {:.1} °C  {:.1} %RH",
+                    reading.temperature(),
+                    reading.humidity()
+                );
+                let line = format!(
+                    "{:.1}C  {:.1}%",
+                    reading.temperature(),
+                    reading.humidity()
+                );
+                lcd_status(&mut lcd, "Temp / Humidity", &line);
+            }
+            Err(e) => {
+                log::warn!("DHT22 [{i}/5] error: {:?}", e);
+                lcd_status(&mut lcd, "DHT22 error", &format!("{:?}", e));
+            }
+        }
+        // DHT22 requires at least 2 s between reads.
+        if i < 5 {
+            FreeRtos::delay_ms(2500);
+        }
+    }
+
     // --- Wi-Fi ---
     lcd_status(&mut lcd, "Wi-Fi", "Connecting...");
 
@@ -76,7 +129,26 @@ fn main() {
     .unwrap();
 
     wifi.start().unwrap();
-    wifi.connect().unwrap();
+
+    // Retry connect — the AP may take a moment to become visible.
+    let mut connected = false;
+    for attempt in 1..=5 {
+        match wifi.connect() {
+            Ok(_) => {
+                connected = true;
+                break;
+            }
+            Err(e) => {
+                log::warn!("Wi-Fi connect attempt {attempt}/5 failed: {e:?}");
+                lcd_status(&mut lcd, "Wi-Fi", &format!("Retry {attempt}/5..."));
+                FreeRtos::delay_ms(2000);
+            }
+        }
+    }
+    if !connected {
+        lcd_status(&mut lcd, "Wi-Fi FAILED", "Check credentials");
+        panic!("Wi-Fi: all connect attempts failed");
+    }
     log::info!("Wi-Fi connected, waiting for IP…");
 
     lcd_status(&mut lcd, "Wi-Fi", "Getting IP...");
@@ -96,7 +168,6 @@ fn main() {
         .unwrap(),
     );
 
-    // Show only the host part of the URL so it fits on 16 chars.
     let host = SERVER_URL
         .trim_start_matches("https://")
         .trim_start_matches("http://")
