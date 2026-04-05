@@ -1,13 +1,12 @@
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    hal::{
-        gpio::{InterruptType, PinDriver, Pull},
-        peripherals::Peripherals,
-    },
-    nvs::EspDefaultNvsPartition,
+use esp_idf_svc::hal::{
+    delay::FreeRtos,
+    gpio::{Gpio4, InterruptType, PinDriver, Pull},
+    task::notification::Notification,
 };
 
 mod http;
@@ -16,65 +15,114 @@ mod ntp;
 mod sensor;
 mod wifi;
 
-fn main() {
-    esp_idf_svc::sys::link_patches();
-    esp_idf_svc::log::EspLogger::initialize_default();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinState {
+    High,
+    Low,
+}
 
-    let peripherals = Peripherals::take().unwrap();
-    let sysloop = EspSystemEventLoop::take().unwrap();
-    let nvs = EspDefaultNvsPartition::take().unwrap();
+/// Which transition the counter thread should count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountOn {
+    Rising,  // count PinState::High (Low → High)
+    Falling, // count PinState::Low  (High → Low)
+}
 
-    // --- Button on GPIO1 (no debounce — raw press counter) ---
-    let counter = Arc::new(AtomicU32::new(0));
-    let counter_isr = counter.clone();
-
-    let mut btn = PinDriver::input(peripherals.pins.gpio1, Pull::Up).unwrap();
-    btn.set_interrupt_type(InterruptType::NegEdge).unwrap();
-    unsafe {
-        btn.subscribe(move || {
-            counter_isr.fetch_add(1, Ordering::Relaxed);
-        })
-        .unwrap();
-    }
-    btn.enable_interrupt().unwrap();
-
-    // Spawn a thread that prints the counter every second.
-    let counter_thread = counter.clone();
+/// Spawn a debouncing thread for a digital input pin.
+/// Emits a confirmed `PinState` on `tx` for every debounced transition.
+fn spawn_debounce_task(gpio4: Gpio4<'static>, tx: Sender<PinState>) {
     std::thread::spawn(move || {
-        let mut last = 0u32;
+        let mut pin = PinDriver::input(gpio4, Pull::Down).unwrap();
+
+        let mut state = if pin.is_high() {
+            PinState::High
+        } else {
+            PinState::Low
+        };
+        log::info!("Debounce task started — initial state: {:?}", state);
+
+        let notification = Notification::new();
+        let notifier = notification.notifier();
+
+        unsafe {
+            pin.subscribe(move || {
+                unsafe {
+                    notifier.notify_and_yield(NonZeroU32::new(1).unwrap())
+                };
+            })
+            .unwrap();
+        }
+
+        let next_edge = |s: PinState| match s {
+            PinState::Low => InterruptType::PosEdge,
+            PinState::High => InterruptType::NegEdge,
+        };
+        pin.set_interrupt_type(next_edge(state)).unwrap();
+        pin.enable_interrupt().unwrap();
+
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            let current = counter_thread.load(Ordering::Relaxed);
-            if current != last {
-                log::info!("Button presses: {current}");
-                last = current;
+            notification.wait_any();
+            FreeRtos::delay_ms(25);
+            let confirmed = if pin.is_high() {
+                PinState::High
+            } else {
+                PinState::Low
+            };
+
+            if confirmed != state {
+                state = confirmed;
+                let _ = tx.send(state);
+            } else {
+                log::debug!("Spurious edge ignored, staying {:?}", state);
+            }
+
+            pin.set_interrupt_type(next_edge(state)).unwrap();
+            pin.enable_interrupt().unwrap();
+        }
+    });
+}
+
+/// Spawn a counter thread that owns a debouncer and counts confirmed transitions.
+///
+/// Returns an `Arc<AtomicU32>` the caller can read at any time.
+/// The counter only increments — it never resets or notifies.
+pub fn spawn_counter_task(
+    gpio4: Gpio4<'static>,
+    count_on: CountOn,
+) -> Arc<AtomicU32> {
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_inner = counter.clone();
+
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel();
+        spawn_debounce_task(gpio4, tx);
+
+        loop {
+            let state = rx.recv().unwrap();
+            let should_count = match count_on {
+                CountOn::Rising => state == PinState::High,
+                CountOn::Falling => state == PinState::Low,
+            };
+            if should_count {
+                counter_inner.fetch_add(1, Ordering::Relaxed);
             }
         }
     });
 
-    let mut lcd = lcd::init(
-        peripherals.i2c0,
-        peripherals.pins.gpio2,
-        peripherals.pins.gpio3,
-    );
+    counter
+}
 
-    let reading = sensor::read(peripherals.pins.gpio10, &mut lcd)
-        .unwrap_or_else(|| {
-            log::warn!("DHT22: no valid reading on boot, using placeholder");
-            sensor::Reading {
-                temperature: 0.0,
-                humidity: 0.0,
-            }
-        });
+fn main() {
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
 
-    let _wifi = wifi::connect(peripherals.modem, sysloop, nvs, &mut lcd);
+    let peripherals =
+        esp_idf_svc::hal::peripherals::Peripherals::take().unwrap();
 
-    ntp::sync(&mut lcd);
+    let counter = spawn_counter_task(peripherals.pins.gpio4, CountOn::Rising);
 
-    log::info!("BOOT_OK");
-
-    // The button driver must stay alive for interrupts to keep firing.
-    let _btn = btn;
-
-    http::run_loop(reading, &mut lcd);
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        log::info!("Press count: {}", counter.load(Ordering::Relaxed));
+    }
 }
