@@ -141,11 +141,8 @@ fn post(
 
 /// Run the main post loop forever.
 /// Takes one reading per simulated hour and POSTs it to the server.
-pub fn run_loop(reading: Reading, lcd: &mut Lcd<'_>) -> ! {
-    let boot_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+/// `boot_unix` is the Unix timestamp at boot, obtained from `ntp::fetch`.
+pub fn run_loop(reading: Reading, boot_unix: u64, lcd: &mut Lcd<'_>) -> ! {
     let boot_instant = std::time::Instant::now();
 
     let mut client = HttpClient::wrap(

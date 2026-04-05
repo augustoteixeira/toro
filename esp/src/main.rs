@@ -147,9 +147,9 @@ fn main() {
 
     let _wifi = wifi::connect(peripherals.modem, sysloop, nvs, &mut lcd);
 
-    ntp::sync(&mut lcd);
+    let boot_unix = ntp::fetch(&mut lcd);
 
     log::info!("BOOT_OK");
 
-    http::run_loop(reading, &mut lcd);
+    http::run_loop(reading, boot_unix, &mut lcd);
 }
