@@ -16,6 +16,11 @@ opt-level = "s"
 [profile.dev]
 debug = true    # Symbols are nice, and they don't increase the size on Flash
 opt-level = "z"
+[features]
+# Post every 10 s with a scaled clock (10 s real = 1 h simulated).
+# Use for development: cargo espflash flash --features test-mode
+test-mode = []
+
 [patch.crates-io]
 esp-idf-sys = { git = "https://github.com/esp-rs/esp-idf-sys.git" }
 esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }

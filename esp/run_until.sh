@@ -8,7 +8,7 @@
 #
 # Usage:
 #   ./run_until.sh <sentinel> [--error <pattern>] [--timeout <N>] [--poll <N>]
-#                              [--port <device>] [--baud <rate>]
+#                              [--port <device>] [--baud <rate>] [--features <f>]
 #
 # Arguments:
 #   sentinel    String to wait for in the serial output (signals success).
@@ -19,6 +19,7 @@
 #   --poll <N>          Seconds between output checks (default: 2).
 #   --port <device>     Serial device (default: /dev/ttyUSB0).
 #   --baud <rate>       Baud rate (default: 115200).
+#   --features <f>      Cargo features to enable (e.g. "test-mode").
 #
 # Examples:
 #   ./run_until.sh "BOOT_OK"
@@ -38,17 +39,22 @@ MAX_WAIT=60
 POLL=2
 PORT="/dev/ttyUSB0"
 BAUD=115200
+FEATURES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --error)   ERROR_PATTERN="$2"; shift 2 ;;
-        --timeout) MAX_WAIT="$2";      shift 2 ;;
-        --poll)    POLL="$2";          shift 2 ;;
-        --port)    PORT="$2";          shift 2 ;;
-        --baud)    BAUD="$2";          shift 2 ;;
+        --error)    ERROR_PATTERN="$2"; shift 2 ;;
+        --timeout)  MAX_WAIT="$2";      shift 2 ;;
+        --poll)     POLL="$2";          shift 2 ;;
+        --port)     PORT="$2";          shift 2 ;;
+        --baud)     BAUD="$2";          shift 2 ;;
+        --features) FEATURES="$2";      shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+FEATURES_ARG=""
+[ -n "$FEATURES" ] && FEATURES_ARG="--features $FEATURES"
 
 LOG=$(mktemp)
 SERIAL_LOG=$(mktemp)
@@ -60,7 +66,7 @@ trap cleanup EXIT
 
 # Step 1: Flash (exits on its own). espflash resets the device after flashing.
 echo "Flashing..."
-if ! cargo espflash flash --port "$PORT" >"$LOG" 2>&1; then
+if ! cargo espflash flash --port "$PORT" $FEATURES_ARG >"$LOG" 2>&1; then
     echo "Flash failed. Log:" >&2
     cat "$LOG" >&2
     exit 1
