@@ -12,6 +12,7 @@ use esp_idf_svc::{
     },
     http::client::{Configuration as HttpConfig, EspHttpConnection},
     nvs::EspDefaultNvsPartition,
+    sntp::{EspSntp, SyncStatus},
     tls::X509,
     wifi::{
         AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi,
@@ -182,6 +183,19 @@ fn main() {
     let ip_str = ip.ip.to_string();
     log::info!("IP address: {}", ip_str);
     lcd_status(&mut lcd, "IP:", &ip_str);
+
+    // --- NTP time sync ---
+    lcd_status(&mut lcd, "NTP", "Syncing...");
+    let sntp = EspSntp::new_default().unwrap();
+    while sntp.get_sync_status() != SyncStatus::Completed {
+        FreeRtos::delay_ms(100);
+    }
+    // Log the synchronised time using std::time (now valid after SNTP sync).
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    log::info!("NTP sync complete — Unix time: {}s", now.as_secs());
+    lcd_status(&mut lcd, "NTP", "Synced");
 
     // --- HTTPS GET ---
     let mut client = HttpClient::wrap(
