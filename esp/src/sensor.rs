@@ -7,7 +7,6 @@ use esp_idf_svc::hal::{
 use crate::lcd::{self, Lcd};
 
 /// A single temperature and humidity reading.
-#[allow(dead_code)]
 pub struct Reading {
     pub temperature: f32,
     pub humidity: f32,
