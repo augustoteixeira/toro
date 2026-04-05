@@ -168,10 +168,22 @@ pub fn run_loop(reading: Reading, lcd: &mut Lcd<'_>) -> ! {
                     last_posted_hour = current_hour.clone();
                     lcd::status(lcd, &current_hour[5..], "Posted OK");
                 }
+                Some(422) => {
+                    // Hour already exists in the DB — treat as success and move on.
+                    log::info!("Hour {current_hour} already posted, skipping");
+                    last_posted_hour = current_hour.clone();
+                }
+                Some(429) => {
+                    // Rate limited — back off for 30 s before retrying.
+                    log::warn!("Rate limited (429), backing off 30s");
+                    lcd::status(lcd, "Rate limited", "Wait 30s...");
+                    FreeRtos::delay_ms(30_000);
+                }
                 Some(status) => {
-                    log::warn!("POST failed with status {status}");
+                    log::warn!(
+                        "POST unexpected status {status}, skipping hour"
+                    );
                     lcd::status(lcd, "POST failed", &status.to_string());
-                    // Advance past this hour to avoid hammering the server.
                     last_posted_hour = current_hour.clone();
                 }
                 None => {
