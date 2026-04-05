@@ -2,3 +2,4 @@
 wifi_ssid = "your_ssid_here"
 wifi_password = "your_password_here"
 server_url = "https://your-server.example.com/"
+server_token = "your-64-char-hex-token-here"
