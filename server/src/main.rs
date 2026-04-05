@@ -83,6 +83,13 @@ async fn post_reading(
     }
 }
 
+#[rocket::get("/api/time")]
+async fn api_time() -> (ContentType, String) {
+    let now = chrono::Utc::now();
+    let hour_key = now.format("%Y-%m-%dT%H").to_string();
+    (ContentType::JSON, format!("\"{}\"", hour_key))
+}
+
 #[rocket::get("/api/day/<date>")]
 async fn api_day(date: &str) -> Result<(ContentType, String), Status> {
     let path = format!("data/static/day/{}.json", date);
@@ -1132,7 +1139,7 @@ async fn main() -> Result<(), rocket::Error> {
                 }
             }
         }))
-        .mount("/", rocket::routes![index, post_reading, day, api_day, week, api_week, month, api_month, semester, api_semester, triennium, api_triennium])
+        .mount("/", rocket::routes![index, api_time, post_reading, day, api_day, week, api_week, month, api_month, semester, api_semester, triennium, api_triennium])
         .ignite()
         .await?;
 
