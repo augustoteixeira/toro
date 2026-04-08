@@ -126,8 +126,8 @@ fn main() {
     let sysloop = EspSystemEventLoop::take().unwrap();
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
-    // Button counter on GPIO4 — started first so it is ready immediately.
-    let press_count =
+    // Rain gauge tipping bucket on GPIO4: 1 pulse = 0.3 mm.
+    let rain_count =
         spawn_counter_task(peripherals.pins.gpio4, CountOn::Rising);
 
     let mut lcd = lcd::init(
@@ -142,6 +142,7 @@ fn main() {
             sensor::Reading {
                 temperature: 0.0,
                 humidity: 0.0,
+                rainfall: 0.0,
             }
         });
 
@@ -151,5 +152,5 @@ fn main() {
 
     log::info!("BOOT_OK");
 
-    http::run_loop(reading, boot_unix, &mut lcd);
+    http::run_loop(reading, boot_unix, rain_count, &mut lcd);
 }

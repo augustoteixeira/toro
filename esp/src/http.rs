@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
 use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::io::Write;
 use esp_idf_svc::{
@@ -8,6 +11,9 @@ use esp_idf_svc::{
 
 use crate::lcd::{self, Lcd};
 use crate::sensor::Reading;
+
+/// mm of rain per tipping bucket pulse.
+const MM_PER_PULSE: f32 = 0.3;
 
 const SERVER_URL: &str = env!("CFG_TORO_SERVER_URL");
 const SERVER_TOKEN: &str = env!("CFG_TORO_SERVER_TOKEN");
@@ -102,8 +108,8 @@ fn post(
     lcd: &mut Lcd<'_>,
 ) -> Option<u16> {
     let body = format!(
-        r#"{{"hour":"{hour}","temperature":{:.1},"humidity":{:.1}}}"#,
-        reading.temperature, reading.humidity
+        r#"{{"hour":"{hour}","temperature":{:.1},"humidity":{:.1},"rainfall":{:.1}}}"#,
+        reading.temperature, reading.humidity, reading.rainfall
     );
 
     let url = format!("{}readings", SERVER_URL);
@@ -142,7 +148,13 @@ fn post(
 /// Run the main post loop forever.
 /// Takes one reading per simulated hour and POSTs it to the server.
 /// `boot_unix` is the Unix timestamp at boot, obtained from `ntp::fetch`.
-pub fn run_loop(reading: Reading, boot_unix: u64, lcd: &mut Lcd<'_>) -> ! {
+/// `rain_counter` is an atomic count of tipping bucket pulses on GPIO4.
+pub fn run_loop(
+    mut reading: Reading,
+    boot_unix: u64,
+    rain_counter: Arc<AtomicU32>,
+    lcd: &mut Lcd<'_>,
+) -> ! {
     let boot_instant = std::time::Instant::now();
 
     let mut client = HttpClient::wrap(
@@ -160,6 +172,20 @@ pub fn run_loop(reading: Reading, boot_unix: u64, lcd: &mut Lcd<'_>) -> ! {
         let current_hour = hour_key(now_unix);
 
         if current_hour != last_posted_hour {
+            // Read and reset rain counter since last post.
+            let pulses = rain_counter.swap(0, Ordering::Relaxed);
+            reading.rainfall = pulses as f32 * MM_PER_PULSE;
+
+            // Show current measurements on LCD before posting.
+            lcd::status(
+                lcd,
+                &format!(
+                    "{:.1}C {:.0}% {:.1}mm",
+                    reading.temperature, reading.humidity, reading.rainfall
+                ),
+                &current_hour[5..],
+            );
+
             match post(&mut client, &current_hour, &reading, lcd) {
                 Some(201) => {
                     last_posted_hour = current_hour.clone();

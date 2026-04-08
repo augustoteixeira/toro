@@ -6,10 +6,11 @@ use esp_idf_svc::hal::{
 
 use crate::lcd::{self, Lcd};
 
-/// A single temperature and humidity reading.
+/// A single sensor reading for one hour.
 pub struct Reading {
     pub temperature: f32,
     pub humidity: f32,
+    pub rainfall: f32,
 }
 
 /// Take 5 readings from the DHT22 on GPIO10, logging each one and showing the
@@ -55,6 +56,7 @@ pub fn read(gpio10: Gpio10, lcd: &mut Lcd<'_>) -> Option<Reading> {
                 last = Some(Reading {
                     temperature: r.temperature(),
                     humidity: r.humidity(),
+                    rainfall: 0.0,
                 });
             }
             Err(e) => {
