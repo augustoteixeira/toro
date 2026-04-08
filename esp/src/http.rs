@@ -91,6 +91,16 @@ fn days_in_month(m: u64, y: u64) -> u64 {
     }
 }
 
+fn new_client() -> HttpClient<EspHttpConnection> {
+    HttpClient::wrap(
+        EspHttpConnection::new(&HttpConfig {
+            server_certificate: Some(CA_CERT),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+}
+
 /// Returns the current simulated Unix time in seconds.
 /// boot_unix: real Unix time at boot (from NTP).
 /// boot_instant: std::time::Instant at boot.
@@ -157,14 +167,7 @@ pub fn run_loop(
 ) -> ! {
     let boot_instant = std::time::Instant::now();
 
-    let mut client = HttpClient::wrap(
-        EspHttpConnection::new(&HttpConfig {
-            server_certificate: Some(CA_CERT),
-            ..Default::default()
-        })
-        .unwrap(),
-    );
-
+    let mut client = new_client();
     let mut last_posted_hour = String::new();
 
     loop {
@@ -210,8 +213,11 @@ pub fn run_loop(
                     last_posted_hour = current_hour.clone();
                 }
                 None => {
-                    log::warn!("POST connection error, will retry next poll");
+                    // Connection error leaves the client in a dirty state.
+                    // Recreate it so the next attempt starts fresh.
+                    log::warn!("POST connection error, recreating client");
                     lcd::status(lcd, "POST error", "Retrying...");
+                    client = new_client();
                 }
             }
         }
