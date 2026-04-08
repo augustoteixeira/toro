@@ -61,7 +61,7 @@ async fn post_reading(
     ip: IpAddr,
     reading: Json<Reading>,
 ) -> Status {
-    if limiter.too_many_attempts(ip, 10, Duration::from_secs(60)) {
+    if limiter.too_many_attempts(ip, 60, Duration::from_secs(60)) {
         return Status::TooManyRequests;
     }
     let reading = reading.into_inner();

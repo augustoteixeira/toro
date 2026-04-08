@@ -167,7 +167,6 @@ pub fn run_loop(
 ) -> ! {
     let boot_instant = std::time::Instant::now();
 
-    let mut client = new_client();
     let mut last_posted_hour = String::new();
 
     loop {
@@ -189,6 +188,7 @@ pub fn run_loop(
                 &current_hour[5..],
             );
 
+            let mut client = new_client();
             match post(&mut client, &current_hour, &reading, lcd) {
                 Some(201) => {
                     last_posted_hour = current_hour.clone();
@@ -213,11 +213,8 @@ pub fn run_loop(
                     last_posted_hour = current_hour.clone();
                 }
                 None => {
-                    // Connection error leaves the client in a dirty state.
-                    // Recreate it so the next attempt starts fresh.
-                    log::warn!("POST connection error, recreating client");
+                    log::warn!("POST connection error, will retry next poll");
                     lcd::status(lcd, "POST error", "Retrying...");
-                    client = new_client();
                 }
             }
         }
